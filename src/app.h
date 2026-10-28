@@ -40,6 +40,7 @@ enum {
     // matnni o'girish menyusi (Ctrl+o'ng-tugma)
     CMD_CONV_TODIGRAPH = 300,   // ö ğ ş ç -> o' g' sh ch
     CMD_CONV_TOSPECIAL,         // o' g' sh ch -> ö ğ ş ç
+    CMD_CONV_CYR2LAT,           // kirill -> lotin
 };
 
 // Umumiy global holat (main.cpp da aniqlanadi)
@@ -63,8 +64,12 @@ bool Hook_IsTerminalWindow(HWND w);
 void TriggerKeyCap(UINT vk, wchar_t* out, int n);
 
 // Matnni o'girish (convert.cpp): belgilangan matnni nusxalab, o'girib, qaytaradi.
-// toDigraph=true: ö ğ ş ç -> o' g' sh ch ;  false: teskari.
-void TextConvert_Run(bool toDigraph);
+enum ConvDir {
+    CONV_TO_DIGRAPH,    // ö ğ ş ç -> o' g' sh ch
+    CONV_TO_SPECIAL,    // o' g' sh ch -> ö ğ ş ç
+    CONV_CYR_TO_LAT,    // kirill -> lotin (yangi alifbo)
+};
+void TextConvert_Run(int dir);   // dir — ConvDir
 
 // Interfeys oynalari
 void ShowLanguageDialog(HWND parent);   // g_settings.lang ni yangilaydi

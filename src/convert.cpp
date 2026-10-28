@@ -2,7 +2,6 @@
 // Ish alohida thread'da bajariladi, shunda hook thread'i (klaviatura) bloklanmaydi.
 #include "app.h"
 #include <string>
-#include <vector>
 #include <cstring>
 #include <cwctype>
 
@@ -84,6 +83,116 @@ static std::wstring ToSpecial(const std::wstring& in)
         if ((c == L'c' || c == L'C') && (d == L'h' || d == L'H')) {
             o += (c == L'C') ? (wchar_t)0x00C7 : (wchar_t)0x00E7; i += 2; continue; }
         o += c; ++i;
+    }
+    return o;
+}
+
+// --- Kirill -> Lotin (yangi alifbo: ö ğ ş ç, ’ tutuq belgisi) ---
+
+// Kirill harfini kichigiga keltiradi; upper — katta edimi. Kirill bo'lmasa 0.
+static wchar_t CyrLower(wchar_t c, bool* upper)
+{
+    *upper = true;
+    if (c >= 0x0410 && c <= 0x042F) return (wchar_t)(c + 0x20);
+    switch (c) {
+    case 0x0401: return 0x0451;   // Ё
+    case 0x040E: return 0x045E;   // Ў
+    case 0x049A: return 0x049B;   // Қ
+    case 0x0492: return 0x0493;   // Ғ
+    case 0x04B2: return 0x04B3;   // Ҳ
+    }
+    *upper = false;
+    if ((c >= 0x0430 && c <= 0x044F) || c == 0x0451 || c == 0x045E ||
+        c == 0x049B || c == 0x0493 || c == 0x04B3)
+        return c;
+    return 0;
+}
+
+static bool IsCyrVowel(wchar_t lc)   // lc — kichik kirill harf
+{
+    switch (lc) {
+    case 0x0430: case 0x0435: case 0x0451: case 0x0438: case 0x043E:   // а е ё и о
+    case 0x0443: case 0x044D: case 0x044E: case 0x044F: case 0x045E:   // у э ю я ў
+        return true;
+    }
+    return false;
+}
+
+static bool IsUpperAny(wchar_t c)
+{
+    bool up;
+    return CyrLower(c, &up) ? up : IsUpperCtx(c);
+}
+
+static bool IsLetterAny(wchar_t c)
+{
+    bool up;
+    return CyrLower(c, &up) != 0 || IsLetterCtx(c);
+}
+
+// Lotin natija harfining kattasi (a-z va ö ğ ş ç; ’ o'zgarmaydi)
+static wchar_t LatUpper(wchar_t c)
+{
+    if (c >= L'a' && c <= L'z') return (wchar_t)(c - 0x20);
+    switch (c) {
+    case 0x00F6: return 0x00D6;
+    case 0x011F: return 0x011E;
+    case 0x015F: return 0x015E;
+    case 0x00E7: return 0x00C7;
+    }
+    return c;
+}
+
+// а..я (0x430..0x44F) uchun lotin qiymati (0-2 belgi; pointer jadvali emas —
+// ixcham). е va ц kontekstga bog'liq — ToLatin o'zi hal qiladi.
+static const wchar_t kCyrLat[32][2] = {
+    {'a'}, {'b'}, {'v'}, {'g'}, {'d'}, {'e'}, {'j'}, {'z'},             // а б в г д е ж з
+    {'i'}, {'y'}, {'k'}, {'l'}, {'m'}, {'n'}, {'o'}, {'p'},             // и й к л м н о п
+    {'r'}, {'s'}, {'t'}, {'u'}, {'f'}, {'x'}, {'s'}, {0x00E7},          // р с т у ф х ц ч
+    {0x015F}, {0x015F, 0x00E7}, {0x2019}, {'i'}, {0}, {'e'}, {'y', 'u'}, {'y', 'a'} // ш щ ъ ы ь э ю я
+};
+
+// Kirill -> lotin. е: so'z boshida, unli yoki ъ/ь dan keyin "ye", aks holda "e";
+// ц: unlidan keyin "ts", aks holda "s". Katta harf: bitta harfli natija — katta;
+// ikki harfli (Yo/YO, Ye/YE, Ts, ŞÇ...) — UpperDigraph mantig'i bilan.
+// Kirill bo'lmagan belgilar o'zgarmaydi.
+static std::wstring ToLatin(const std::wstring& in)
+{
+    std::wstring o;
+    o.reserve(in.size() + 8);
+    for (size_t i = 0; i < in.size(); ++i) {
+        wchar_t c  = in[i];
+        wchar_t pv = (i > 0) ? in[i - 1] : 0;
+        wchar_t nx = (i + 1 < in.size()) ? in[i + 1] : 0;
+        bool    up;
+        wchar_t lc = CyrLower(c, &up);
+        wchar_t r[2] = { c, 0 };                      // kirill emas — o'zgarmaydi
+        if (lc) {
+            bool    pvUp;
+            wchar_t pl = pv ? CyrLower(pv, &pvUp) : 0;   // oldingi harf (kichik kirill) yoki 0
+            switch (lc) {
+            case 0x0451: r[0] = 'y'; r[1] = 'o'; break;  // ё
+            case 0x045E: r[0] = 0x00F6; break;           // ў
+            case 0x049B: r[0] = 'q';    break;           // қ
+            case 0x0493: r[0] = 0x011F; break;           // ғ
+            case 0x04B3: r[0] = 'h';    break;           // ҳ
+            default:
+                r[0] = kCyrLat[lc - 0x0430][0];
+                r[1] = kCyrLat[lc - 0x0430][1];
+                if (lc == 0x0435 &&                          // е
+                    (!IsLetterAny(pv) || IsCyrVowel(pl) || pl == 0x044A || pl == 0x044C)) {
+                    r[0] = 'y'; r[1] = 'e';
+                } else if (lc == 0x0446 && IsCyrVowel(pl)) { // ц
+                    r[1] = 's'; r[0] = 't';
+                }
+            }
+            if (up && r[0]) {
+                r[0] = LatUpper(r[0]);
+                if (r[1] && (IsUpperAny(nx) || (!IsLetterAny(nx) && IsUpperAny(pv))))
+                    r[1] = LatUpper(r[1]);
+            }
+        }
+        o.append(r, r[0] ? (r[1] ? 2 : 1) : 0);         // bitta qo'shish joyi (exe hajmi)
     }
     return o;
 }
@@ -174,7 +283,8 @@ struct ClipItem { UINT fmt; HGLOBAL data; };
 struct ClipSnapshot {
     bool  ok = false;               // clipboard ochilib o'qildi
     UINT  total = 0;                // asl formatlar soni (saqlanmaganlari ham)
-    std::vector<ClipItem> items;    // nusxalangan HGLOBAL formatlar (asl tartibda)
+    UINT  count = 0;                // items dagi elementlar soni
+    ClipItem items[128];            // nusxalangan HGLOBAL formatlar (asl tartibda; odatda < 30)
 };
 
 // Ma'lumoti HGLOBAL bo'lgan va xavfsiz nusxalanadigan formatmi.
@@ -226,8 +336,8 @@ static HGLOBAL DupGlobal(HANDLE h)
 
 static void ClipFree(ClipSnapshot& s)
 {
-    for (size_t i = 0; i < s.items.size(); ++i) GlobalFree(s.items[i].data);
-    s.items.clear();
+    for (UINT i = 0; i < s.count; ++i) GlobalFree(s.items[i].data);
+    s.count = 0;
 }
 
 static void ClipSave(ClipSnapshot& s)
@@ -239,7 +349,11 @@ static void ClipSave(ClipSnapshot& s)
         if (!IsHGlobalFormat(f)) continue;
         HANDLE h = GetClipboardData(f);
         HGLOBAL copy = h ? DupGlobal(h) : NULL;
-        if (copy) s.items.push_back({ f, copy });
+        if (copy) {
+            s.items[s.count].fmt  = f;
+            s.items[s.count].data = copy;
+            if (++s.count == sizeof(s.items) / sizeof(s.items[0])) break;   // juda ko'p format — qolgani saqlanmaydi
+        }
     }
     CloseClipboard();
 }
@@ -250,16 +364,16 @@ static void ClipSave(ClipSnapshot& s)
 // bo'shatamiz.
 static void ClipRestore(ClipSnapshot& s)
 {
-    if (!s.ok || (s.items.empty() && s.total != 0)) { ClipFree(s); return; }
+    if (!s.ok || (s.count == 0 && s.total != 0)) { ClipFree(s); return; }
     if (!ClipOpen()) { ClipFree(s); return; }
     EmptyClipboard();
     bool hasHistFlag = false;
-    for (size_t i = 0; i < s.items.size(); ++i) {
+    for (UINT i = 0; i < s.count; ++i) {
         if (s.items[i].fmt == FmtCanIncludeHistory()) hasHistFlag = true;
         if (!SetClipboardData(s.items[i].fmt, s.items[i].data))
             GlobalFree(s.items[i].data);
     }
-    s.items.clear();
+    s.count = 0;
     // Asl ma'lumot Win+V tarixida allaqachon bor — qayta tiklash uni
     // ikkinchi marta qo'shmasin.
     if (s.total != 0 && !hasHistFlag) ClipPutDword(FmtCanIncludeHistory(), 0);
@@ -283,7 +397,7 @@ static volatile LONG g_convBusy = 0;
 
 static DWORD WINAPI ConvThread(LPVOID param)
 {
-    bool toDigraph = (param != NULL);
+    int dir = (int)(INT_PTR)param;   // ConvDir
 
     // Menyu tezkor tugma (Ctrl+Shift+F11 kabi) bilan ochilgan bo'lsa, foydalanuvchi
     // Shift/Alt/Win ni hali qo'yib yubormagan bo'lishi mumkin — shunda bizning
@@ -315,7 +429,8 @@ static DWORD WINAPI ConvThread(LPVOID param)
     if (changed) {
         sel = ClipGet();
         if (!sel.empty())
-            out = toDigraph ? ToDigraph(sel, g_settings.apo) : ToSpecial(sel);
+            out = dir == CONV_TO_DIGRAPH ? ToDigraph(sel, g_settings.apo) :
+                  dir == CONV_CYR_TO_LAT ? ToLatin(sel) : ToSpecial(sel);
     }
 
     if (!changed) {
@@ -343,11 +458,11 @@ static DWORD WINAPI ConvThread(LPVOID param)
     return 0;
 }
 
-void TextConvert_Run(bool toDigraph)
+void TextConvert_Run(int dir)
 {
+    if (dir < CONV_TO_DIGRAPH || dir > CONV_CYR_TO_LAT) return;
     if (InterlockedCompareExchange(&g_convBusy, 1, 0) != 0) return;   // oldingisi hali ishlayapti
-    HANDLE t = CreateThread(NULL, 0, ConvThread,
-                            (LPVOID)(INT_PTR)(toDigraph ? 1 : 0), 0, NULL);
+    HANDLE t = CreateThread(NULL, 0, ConvThread, (LPVOID)(INT_PTR)dir, 0, NULL);
     if (t) CloseHandle(t);
     else   InterlockedExchange(&g_convBusy, 0);
 }

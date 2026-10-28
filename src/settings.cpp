@@ -9,7 +9,7 @@
 // Standart qiymatlar (apo = rasmiy tutuq belgisi ʻ U+02BB)
 Settings g_settings = { LANG_UZ, TRIGGER_VK, true, false, true, (wchar_t)0x02BB, MODE_TRIGGER,
                         HK_CTRL_SHIFT(VK_F9), HK_CTRL_SHIFT(VK_F10), HK_CTRL_SHIFT(VK_F11),
-                        true, AUTO_RULE_ALL };
+                        true, AUTO_RULE_ALL, true };
 
 // Istisno ilovalar ro'yxati: main thread yozadi, hook thread'i o'qiydi
 static const int kExcludeMax = 1024;          // 1023 belgi + 0
@@ -60,6 +60,7 @@ void Settings_Load()
 
     if (GetFileAttributesW(ini) == INVALID_FILE_ATTRIBUTES) {
         g_settings.firstRun = true;         // fayl yo'q - birinchi ishga tushish
+        Settings_SetExcludes(Settings_DefaultExcludes());   // birinchi Save yozadi (DefaultExcludes=1 bilan)
         return;
     }
     g_settings.lang         = (Lang)GetPrivateProfileIntW(L"general", L"Language",     LANG_UZ,     ini);
@@ -79,6 +80,23 @@ void Settings_Load()
     wchar_t ex[kExcludeMax];
     GetPrivateProfileStringW(L"general", L"ExcludeApps", L"", ex, kExcludeMax, ini);
     Settings_SetExcludes(ex);
+    // Bir martalik migratsiya: standart istisnolar mavjud ro'yxatga QO'SHILADI
+    // (takrorsiz, sig'ganicha). Bayroq yozilgach foydalanuvchi o'chirganlari
+    // qayta qo'shilmaydi.
+    if (GetPrivateProfileIntW(L"general", L"DefaultExcludes", 0, ini) == 0) {
+        wchar_t merged[kExcludeMax * 2];
+        lstrcpynW(merged, ex, kExcludeMax);
+        lstrcatW(merged, L";");
+        lstrcatW(merged, Settings_DefaultExcludes());
+        Settings_SetExcludes(merged);
+        Settings_GetExcludes(ex, kExcludeMax);
+        WritePrivateProfileStringW(L"general", L"ExcludeApps", ex, ini);
+        WritePrivateProfileStringW(L"general", L"DefaultExcludes", L"1", ini);
+    }
+
+    g_settings.skipEnglish = GetPrivateProfileIntW(L"general", L"SkipEnglish", 1, ini) != 0;
+    GetPrivateProfileStringW(L"general", L"SkipWords", L"", ex, kExcludeMax, ini);
+    Settings_SetSkipWords(ex);
 
     if (g_settings.lang < 0 || g_settings.lang >= LANG_COUNT) g_settings.lang = LANG_UZ;
     // Noma'lum/buzilgan rejim qiymati — standart (trigger) rejim
@@ -121,6 +139,12 @@ void Settings_Save()
     wchar_t ex[kExcludeMax];
     Settings_GetExcludes(ex, kExcludeMax);
     WritePrivateProfileStringW(L"general", L"ExcludeApps", ex, ini);
+    // Standartlar Load'da allaqachon qo'shilgan (yangi foydalanuvchiga ham)
+    WritePrivateProfileStringW(L"general", L"DefaultExcludes", L"1", ini);
+
+    WritePrivateProfileStringW(L"general", L"SkipEnglish", g_settings.skipEnglish ? L"1" : L"0", ini);
+    Settings_GetSkipWords(ex, kExcludeMax);
+    WritePrivateProfileStringW(L"general", L"SkipWords", ex, ini);
 }
 
 // ---------------------------------------------------------------------------
@@ -153,37 +177,51 @@ void Settings_GetExcludes(wchar_t* out, int n)
     ReleaseSRWLockShared(&g_exLock);
 }
 
-// Ro'yxatni normallashtiradi: ajratgich ';' (',' va yangi qator ham qabul
-// qilinadi), bo'sh joy/qo'shtirnoq olib tashlanadi, to'liq yo'l berilsa faqat
-// fayl nomi qoladi, kichik harfga keltiriladi, bo'sh va takror elementlar
-// tashlanadi. 1023 belgiga sig'magan elementlar qo'shilmaydi.
-void Settings_SetExcludes(const wchar_t* list)
+// Ro'yxatni normallashtiradi (tmp — kExcludeMax belgi): elementlar chetidagi
+// bo'sh joy/qo'shtirnoq olib tashlanadi, kichik harfga keltiriladi, bo'sh va
+// takror elementlar tashlanadi, ';' bilan yig'iladi. 1023 belgiga sig'magan
+// elementlar qo'shilmaydi.
+//   words=false (exe nomlari): ajratgich ; , \r \n; to'liq yo'l -> fayl nomi.
+//   words=true  (so'zlar):     bo'shliq va tab ham ajratgich; apostrof
+//                              variantlari (` ʻ ‘ ’) -> '.
+static void NormalizeList(const wchar_t* list, wchar_t* tmp, bool words)
 {
-    wchar_t tmp[kExcludeMax];
-    int     len = 0;
+    int len = 0;
     tmp[0] = 0;
     for (const wchar_t* s = list ? list : L""; *s; ) {
         const wchar_t* e = s;
-        while (*e && !IsExSep(*e)) e++;
+        while (*e && !IsExSep(*e) && !(words && (*e == L' ' || *e == L'\t'))) e++;
         const wchar_t* a = s;
         const wchar_t* b = e;
         while (a < b && (*a == L' ' || *a == L'\t' || *a == L'"')) a++;
         while (b > a && (b[-1] == L' ' || b[-1] == L'\t' || b[-1] == L'"')) b--;
-        for (const wchar_t* q = a; q < b; q++)          // yo'l -> fayl nomi
-            if (*q == L'\\' || *q == L'/') a = q + 1;
+        if (!words)
+            for (const wchar_t* q = a; q < b; q++)      // yo'l -> fayl nomi
+                if (*q == L'\\' || *q == L'/') a = q + 1;
         int tl = (int)(b - a);
-        if (tl > 0 && !ExcludesHave(tmp, a, tl)) {
-            int need = tl + (len ? 1 : 0);
-            if (len + need < kExcludeMax) {
-                if (len) tmp[len++] = L';';
-                CopyMemory(tmp + len, a, tl * sizeof(wchar_t));
-                CharLowerBuffW(tmp + len, (DWORD)tl);
-                len += tl;
-                tmp[len] = 0;
+        int need = tl + (len ? 1 : 0);
+        if (tl > 0 && len + need < kExcludeMax) {
+            wchar_t* d = tmp + len + (len ? 1 : 0);
+            CopyMemory(d, a, tl * sizeof(wchar_t));
+            CharLowerBuffW(d, (DWORD)tl);
+            if (words)
+                for (int i = 0; i < tl; ++i)
+                    if (d[i] == L'`' || d[i] == 0x02BB || d[i] == 0x2018 || d[i] == 0x2019) d[i] = L'\'';
+            // len == 0 da d = tmp (hali 0 bilan tugamagan) — takror bo'lishi mumkin emas
+            if (len == 0 || !ExcludesHave(tmp, d, tl)) { // takror emas — qabul qilamiz
+                if (len) tmp[len] = L';';
+                len += need;
             }
+            tmp[len] = 0;
         }
         s = *e ? e + 1 : e;
     }
+}
+
+void Settings_SetExcludes(const wchar_t* list)
+{
+    wchar_t tmp[kExcludeMax];
+    NormalizeList(list, tmp, false);
     AcquireSRWLockExclusive(&g_exLock);
     lstrcpyW(g_excludes, tmp);
     ReleaseSRWLockExclusive(&g_exLock);
@@ -195,6 +233,51 @@ bool Settings_IsExcluded(const wchar_t* exeName)
     AcquireSRWLockShared(&g_exLock);
     bool r = ExcludesHave(g_excludes, exeName, lstrlenW(exeName));
     ReleaseSRWLockShared(&g_exLock);
+    return r;
+}
+
+// Dasturlash muhitlari (kod muharrirlari, IDE'lar) — avto rejim ularda
+// identifikatorlarni buzmasin. Yangi foydalanuvchiga ham, bir martalik
+// migratsiya bilan mavjudiga ham qo'shiladi.
+const wchar_t* Settings_DefaultExcludes()
+{
+    return L"code.exe;code - insiders.exe;cursor.exe;windsurf.exe;zed.exe;devenv.exe;"
+           L"idea64.exe;pycharm64.exe;webstorm64.exe;clion64.exe;rider64.exe;goland64.exe;"
+           L"phpstorm64.exe;rustrover64.exe;datagrip64.exe;studio64.exe;sublime_text.exe;"
+           L"notepad++.exe;gvim.exe;nvim-qt.exe;eclipse.exe";
+}
+
+// ---------------------------------------------------------------------------
+//  Istisno so'zlar (avto rejim: so'z tugaganda asliga qaytariladi)
+// ---------------------------------------------------------------------------
+static wchar_t g_skipWords[kExcludeMax] = {};
+static SRWLOCK g_skLock = SRWLOCK_INIT;
+
+void Settings_GetSkipWords(wchar_t* out, int n)
+{
+    if (!out || n <= 0) return;
+    AcquireSRWLockShared(&g_skLock);
+    lstrcpynW(out, g_skipWords, n);
+    ReleaseSRWLockShared(&g_skLock);
+}
+
+void Settings_SetSkipWords(const wchar_t* list)
+{
+    wchar_t tmp[kExcludeMax];
+    NormalizeList(list, tmp, true);
+    AcquireSRWLockExclusive(&g_skLock);
+    lstrcpyW(g_skipWords, tmp);
+    ReleaseSRWLockExclusive(&g_skLock);
+}
+
+// Hook thread'i: so'z tugaganda (har so'zda emas — faqat almashtirish bo'lgan
+// so'zda) chaqiriladi. Ro'yxat ≤ 1023 belgi — chiziqli qidiruv yetarli.
+bool Settings_IsSkipWord(const wchar_t* w, int len)
+{
+    if (!w || len <= 0) return false;
+    AcquireSRWLockShared(&g_skLock);
+    bool r = ExcludesHave(g_skipWords, w, len);
+    ReleaseSRWLockShared(&g_skLock);
     return r;
 }
 

@@ -115,6 +115,8 @@ enum {
     ID_EDIT, ID_ADD, ID_BROWSE, ID_LIST,
     ID_GITHUB, ID_LINKEDIN, ID_LICENSE,
     ID_PGEDIT, ID_PGCLEAR,                            // sinov maydoni
+    ID_SKIPEN, ID_SKIPEDIT,                           // Rejim: inglizcha so'zlar toggle'i, istisno so'zlar maydoni
+    ID_ADDDEV,                                        // Istisnolar: dasturlash muhitlarini qo'shish
     ID_COUNT
 };
 
@@ -156,6 +158,7 @@ struct Item {
     RECT rc;
     bool enabled, page;     // page: kontent sahifasiga tegishli (nav va pastki panel emas)
     const wchar_t* text;    // yorliq/qiymat (T() yoki literal — doimiy ko'rsatkich)
+    const wchar_t* text2;   // K_ROW: nom ostidagi kichik izoh (NULL — nom qator o'rtasida)
     int  sub;               // kind ga qarab: matn uslubi, tugma turi, illyustratsiya turi
 };
 
@@ -169,7 +172,7 @@ struct Chip {
 #define CHIP_MAX 6
 
 struct Win {
-    HWND  hwnd, edit, pgEdit;
+    HWND  hwnd, edit, pgEdit, skipEdit;
     int   dpi, cw, ch;
     int   page;             // joriy sahifa (SP_*)
     int   focus;            // fokusdagi element ID si (-1: yo'q)
@@ -190,7 +193,7 @@ struct Win {
     // tahrirlanayotgan qiymatlar (Saqlashgacha g_settings'ga tegmaydi; til — jonli)
     Lang  origLang;
     wchar_t apo;
-    bool  startup, notify;
+    bool  startup, notify, skipEn;
     InputMode mode;
     UINT  trig, rules;
     WORD  hk[3];
@@ -466,6 +469,40 @@ static bool ExAdd(Win* w, const wchar_t* raw)
     return true;
 }
 
+// Standart istisnolar (Settings_DefaultExcludes, ";" bilan) — har bir nom uchun fn(nom) chaqiriladi
+template <class F> static void ForEachDefault(F fn)
+{
+    const wchar_t* s = Settings_DefaultExcludes();
+    while (s && *s) {
+        const wchar_t* e = s;
+        while (*e && *e != L';') ++e;
+        if (e > s && e - s < MAX_PATH) {
+            wchar_t name[MAX_PATH];
+            CopyMemory(name, s, (e - s) * sizeof(wchar_t));
+            name[e - s] = 0;
+            fn(name);
+        }
+        if (!*e) break;
+        s = e + 1;
+    }
+}
+
+// Standart istisnolarning hammasi ro'yxatda bormi (tugma shunda o'chiq turadi)
+static bool DevAllPresent(const Win* w)
+{
+    bool all = true;
+    int cnt = ExCount(w->ex);
+    ForEachDefault([&](const wchar_t* name) {
+        bool found = false;
+        for (int i = 0; i < cnt && !found; ++i) {
+            wchar_t cur[MAX_PATH];
+            found = ExGet(w->ex, i, cur, MAX_PATH) && lstrcmpiW(cur, name) == 0;
+        }
+        if (!found) all = false;
+    });
+    return all;
+}
+
 // ---------------------------------------------------------------------
 //  Tezkor tugmalar qoidalari
 // ---------------------------------------------------------------------
@@ -522,23 +559,43 @@ static Item* Add(Win* w, int id, int kind, int l, int t, int r, int b,
     Item* i = &w->it[w->nit < MAX_ITEMS ? w->nit++ : MAX_ITEMS - 1];
     i->id = id; i->kind = kind;
     i->rc.left = l; i->rc.top = t; i->rc.right = r; i->rc.bottom = b;
-    i->enabled = en; i->page = w->addingPage; i->text = text; i->sub = sub;
+    i->enabled = en; i->page = w->addingPage; i->text = text; i->text2 = NULL; i->sub = sub;
     return i;
 }
 
 static int X0(const Win* w) { return S(w, SIDE_W + PAD); }
 static int X1(const Win* w) { return w->cw - S(w, PAD); }
 
+// Bir qatorli matn kengligi (piksel)
+static int MeasureW(Win* w, HFONT f, const wchar_t* s)
+{
+    HDC dc = GetDC(w->hwnd);
+    HGDIOBJ old = SelectObject(dc, f);
+    SIZE sz = {};
+    GetTextExtentPoint32W(dc, s, lstrlenW(s), &sz);
+    SelectObject(dc, old);
+    ReleaseDC(w->hwnd, dc);
+    return sz.cx;
+}
+
+// Sozlama qatori: kartochka + chapda nom. O'ngdagi boshqaruv uchun joy (cw x chh) qaytariladi.
+// rh — qator balandligi, hint — nom ostidagi kichik izoh (NULL bo'lishi mumkin)
+static RECT AddRowEx(Win* w, int y, int rh, const wchar_t* name, const wchar_t* hint, int cw, int chh, bool en = true)
+{
+    RECT row = { X0(w), y, X1(w), y + rh };
+    Item* it = Add(w, -1, K_ROW, row.left, row.top, row.right, row.bottom, name, en);
+    it->text2 = hint;
+    // nom matni boshqaruv joyigacha cho'ziladi
+    it->sub = cw + S(w, 28);
+    int ry = y + (rh - chh) / 2;
+    RECT c = { row.right - S(w, 16) - cw, ry, row.right - S(w, 16), ry + chh };
+    return c;
+}
+
 // Sozlama qatori: kartochka + chapda nom. O'ngdagi boshqaruv uchun joy (cw x chh) qaytariladi.
 static RECT AddRow(Win* w, int y, const wchar_t* name, int cw, int chh)
 {
-    RECT row = { X0(w), y, X1(w), y + S(w, ROW_H) };
-    Item* it = Add(w, -1, K_ROW, row.left, row.top, row.right, row.bottom, name);
-    // nom matni boshqaruv joyigacha cho'ziladi
-    it->sub = cw + S(w, 28);
-    int ry = y + (S(w, ROW_H) - chh) / 2;
-    RECT c = { row.right - S(w, 16) - cw, ry, row.right - S(w, 16), ry + chh };
-    return c;
+    return AddRowEx(w, y, S(w, ROW_H), name, NULL, cw, chh);
 }
 
 static void PageTitle(Win* w, const wchar_t* text)
@@ -576,7 +633,7 @@ static void LayoutMode(Win* w)
 {
     int gap = S(w, 16);
     int cardW = (X1(w) - X0(w) - gap) / 2;
-    int top = S(w, TOP_Y), cardH = S(w, 252);
+    int top = S(w, TOP_Y), cardH = S(w, 196);
     bool trigOn = (w->mode == MODE_TRIGGER);
 
     for (int k = 0; k < 2; ++k) {
@@ -584,27 +641,27 @@ static void LayoutMode(Win* w)
         int p = S(w, 18);
         Add(w, k ? ID_CARD_AUTO : ID_CARD_TRIG, K_CARD, l, top, r, top + cardH);
         // qisqa sarlavha (bir qator) + kichik izoh qatori; o'ng yuqoridagi ✓ belgisiga tegmasligi uchun sarlavha torroq
-        Add(w, -1, K_TEXT, l + p, top + S(w, 16), r - S(w, 44), top + S(w, 40),
+        Add(w, -1, K_TEXT, l + p, top + S(w, 12), r - S(w, 44), top + S(w, 34),
             T(k ? S_OSD_MODE_AUTO : S_OSD_MODE_TRIGGER), true, TS_HEAD);
-        Add(w, -1, K_TEXT, l + p, top + S(w, 42), r - p, top + S(w, 62),
+        Add(w, -1, K_TEXT, l + p, top + S(w, 36), r - p, top + S(w, 56),
             k ? L"o' g' sh ch → ö ğ ş ç" : T(S_MODE_TRIGGER), true, TS_SUB);
-        Add(w, -1, K_ILLU, l + p, top + S(w, 70), r - p, top + S(w, 114), NULL, true, k);
+        Add(w, -1, K_ILLU, l + p, top + S(w, 56), r - p, top + S(w, 98), NULL, true, k);
         bool on = (k == 1) == !trigOn;      // shu kartochka tanlanganmi
         if (k == 0) {
-            Add(w, -1, K_TEXT, l + p, top + S(w, 130), r - p, top + S(w, 150),
+            Add(w, -1, K_TEXT, l + p, top + S(w, 102), r - p, top + S(w, 120),
                 Label(w, S_SET_TRIGGER), on, TS_HINT);
             const wchar_t* name = L"";
             for (int i = 0; i < kTrigOptCount; ++i)
                 if (kTrigOpts[i].vk == w->trig) name = T(kTrigOpts[i].name);
-            Add(w, ID_TRIG, K_DROP, l + p, top + S(w, 156), r - p, top + S(w, 156) + S(w, 36),
+            Add(w, ID_TRIG, K_DROP, l + p, top + S(w, 124), r - p, top + S(w, 124) + S(w, 36),
                 name, on);
         } else {
-            Add(w, -1, K_TEXT, l + p, top + S(w, 130), r - p, top + S(w, 150),
+            Add(w, -1, K_TEXT, l + p, top + S(w, 102), r - p, top + S(w, 120),
                 Label(w, S_SET_RULES), on, TS_HINT);
             static const wchar_t* const kRule[4] = { L"o' → ö", L"g' → ğ", L"sh → ş", L"ch → ç" };
             int cell = (cardW - 2 * p) / 2;
             for (int i = 0; i < 4; ++i) {
-                int cx = l + p + (i % 2) * cell, cy = top + S(w, 158) + (i / 2) * S(w, 38);
+                int cx = l + p + (i % 2) * cell, cy = top + S(w, 124) + (i / 2) * S(w, 34);
                 Add(w, ID_RULE_O + i, K_TOGGLE, cx, cy, cx + cell, cy + S(w, 30), kRule[i], on);
             }
         }
@@ -618,12 +675,32 @@ static void LayoutMode(Win* w)
         TriggerKeyCap(w->trig, cap, 24);
         wsprintfW(w->example, T(S_SET_EXAMPLE_TRIGGER), cap);
     }
-    Add(w, -1, K_TEXT, X0(w), top + cardH + S(w, 18), X1(w), top + cardH + S(w, 48),
-        w->example, true, TS_BODY);
+    int y = top + cardH + S(w, 4);
+    Add(w, -1, K_TEXT, X0(w), y, X1(w), y + S(w, 20), w->example, true, TS_BODY);
+    y += S(w, 24);
 
-    // tanlov hali saqlanmagan: sinov maydoni eski rejimda ishlashini eslatadi
-    if (w->mode != g_settings.mode)
-        Add(w, -1, K_PILL, X0(w), top + cardH + S(w, 58), X1(w), top + cardH + S(w, 84), T(S_PG_UNSAVED));
+    // tanlov hali saqlanmagan: sinov maydoni eski rejimda ishlashini eslatadi (sarlavha qatorida, o'ngda)
+    if (w->mode != g_settings.mode) {
+        int pw = MeasureW(w, w->fSmall, T(S_PG_UNSAVED)) + S(w, 46);
+        int maxw = X1(w) - X0(w) - S(w, 120);
+        if (pw > maxw) pw = maxw;
+        Add(w, -1, K_PILL, X1(w) - pw, S(w, 32), X1(w), S(w, 58), T(S_PG_UNSAVED));
+    }
+
+    // avto rejim bo'limi: inglizcha so'zlar (toggle + izoh) va foydalanuvchining istisno so'zlari.
+    // Trigger rejimida (avto tanlanmagan) boshqa avto elementlar kabi xira/o'chiq.
+    bool autoOn = !trigOn;
+    RECT c = AddRowEx(w, y, S(w, 72), T(S_SET_SKIP_EN), T(S_SET_SKIP_EN_HINT), S(w, 44), S(w, 22), autoOn);
+    Add(w, ID_SKIPEN, K_TOGGLE, c.left, c.top, c.right, c.bottom, NULL, autoOn);
+    y += S(w, 78);
+
+    c = AddRowEx(w, y, S(w, 48), Label(w, S_SET_SKIP_WORDS), NULL, S(w, 270), S(w, 34), autoOn);
+    Add(w, ID_SKIPEDIT, K_EDIT, c.left, c.top, c.right, c.bottom, NULL, autoOn);
+    int eh = S(w, 20);
+    MoveWindow(w->skipEdit, c.left + S(w, 12), c.top + (c.bottom - c.top - eh) / 2,
+               c.right - c.left - S(w, 24), eh, TRUE);
+    EnableWindow(w->skipEdit, autoOn);
+    SendMessageW(w->skipEdit, 0x1501 /*EM_SETCUEBANNER*/, TRUE, (LPARAM)T(S_SET_SKIP_WORDS_HINT));
 }
 
 static void LayoutHotkeys(Win* w)
@@ -646,7 +723,11 @@ static void LayoutHotkeys(Win* w)
 static void LayoutExclude(Win* w)
 {
     int y = S(w, TOP_Y);
-    Add(w, -1, K_TEXT, X0(w), y, X1(w), y + S(w, 38), T(S_EX_HINT), true, TS_HINT);
+    // "Dasturlash muhitlarini qo'shish": hint qatorining o'ngida; hammasi allaqachon bor bo'lsa o'chiq
+    int dw = MeasureW(w, w->fBody, T(S_EX_ADD_DEV)) + S(w, 36);
+    if (dw > S(w, 240)) dw = S(w, 240);
+    Add(w, -1, K_TEXT, X0(w), y, X1(w) - dw - S(w, 12), y + S(w, 38), T(S_EX_HINT), true, TS_HINT);
+    Add(w, ID_ADDDEV, K_BTN, X1(w) - dw, y, X1(w), y + S(w, 34), T(S_EX_ADD_DEV), !DevAllPresent(w), UI_BTN_SECONDARY);
     y += S(w, 44);
 
     int h = S(w, 40), gap = S(w, 8);
@@ -805,6 +886,15 @@ static void DrawRowCard(Win* w, HDC dc, const Item& it)
     int r = S(w, 10);
     Ui_FillRound(dc, it.rc, r, th.surface);
     Ui_StrokeRound(dc, it.rc, r, th.border, 1);
+    COLORREF tc = it.enabled ? th.text : th.textDim;
+    if (it.text2) {
+        // nom + ostida kichik izoh (ikki qatorgacha)
+        RECT n = { it.rc.left + S(w, 18), it.rc.top + S(w, 9), it.rc.right - it.sub, it.rc.top + S(w, 31) };
+        Ui_Text(dc, it.text, n, w->fBody, tc, DT_SINGLELINE | DT_VCENTER | DT_END_ELLIPSIS | DT_NOPREFIX);
+        RECT h = { n.left, it.rc.top + S(w, 31), it.rc.right - it.sub, it.rc.bottom - S(w, 6) };
+        Ui_Text(dc, it.text2, h, w->fSmall, th.textDim, DT_WORDBREAK | DT_END_ELLIPSIS | DT_NOPREFIX);
+        return;
+    }
     // uzun nom ikki qatorga o'raladi va qator ichida vertikal markazlanadi
     RECT t = { it.rc.left + S(w, 18), it.rc.top, it.rc.right - it.sub, it.rc.bottom };
     HGDIOBJ old = SelectObject(dc, w->fBody);
@@ -813,7 +903,7 @@ static void DrawRowCard(Win* w, HDC dc, const Item& it)
     SelectObject(dc, old);
     int off = (t.bottom - t.top - m.bottom) / 2;
     if (off > 0) t.top += off;
-    Ui_Text(dc, it.text, t, w->fBody, th.text, DT_WORDBREAK | DT_NOPREFIX | DT_END_ELLIPSIS);
+    Ui_Text(dc, it.text, t, w->fBody, tc, DT_WORDBREAK | DT_NOPREFIX | DT_END_ELLIPSIS);
 }
 
 static void DrawText_(Win* w, HDC dc, const Item& it)
@@ -1230,7 +1320,19 @@ static void DrawItem(Win* w, HDC dc, const Item& it)
     case K_HKX:    DrawHkx(w, dc, it); break;
     case K_LIST:   DrawList(w, dc, it); break;
     case K_EDIT:
-        Ui_DrawInputFrame(dc, it.rc, GetFocus() == w->edit, 0.f);   // EDIT foni doim surface — hover farqi chiqmasin
+        {
+            HWND eh = (it.id == ID_SKIPEDIT) ? w->skipEdit : w->edit;
+            Ui_DrawInputFrame(dc, it.rc, it.enabled && GetFocus() == eh, 0.f);   // EDIT foni doim surface — hover farqi chiqmasin
+            if (!it.enabled) {
+                // o'chiq (trigger rejimi): native EDIT yashirin, ramkada joriy matn xira ko'rinadi
+                wchar_t buf[1280];
+                GetWindowTextW(w->skipEdit, buf, 1280);
+                RECT tr = { it.rc.left + S(w, 12), it.rc.top, it.rc.right - S(w, 12), it.rc.bottom };
+                Ui_Text(dc, buf[0] ? buf : T(S_SET_SKIP_WORDS_HINT), tr, w->fBody, Ui_Theme().textDim,
+                        DT_SINGLELINE | DT_VCENTER | DT_END_ELLIPSIS | DT_NOPREFIX);
+                Ui_FillRound(dc, it.rc, S(w, 6), Ui_Theme().bg, 110);
+            }
+        }
         break;
     }
 }
@@ -1317,6 +1419,7 @@ static void ShowPageEdits(Win* w)
     bool ex = (w->page == SP_EXCLUDE && !tr), pg = (w->page == SP_PLAYGROUND && !tr);
     ShowWindow(w->edit,   ex ? SW_SHOW : SW_HIDE);
     ShowWindow(w->pgEdit, pg ? SW_SHOW : SW_HIDE);
+    ShowWindow(w->skipEdit, (w->page == SP_MODE && !tr && w->mode == MODE_AUTO) ? SW_SHOW : SW_HIDE);
     if (pg && w->wantPgFocus) {
         w->wantPgFocus = false;
         SetFocusId(w, ID_PGEDIT, false);
@@ -1336,7 +1439,8 @@ static void SetFocusId(Win* w, int id, bool kbd)
     w->kbd = kbd;
     if (id == ID_EDIT) SetFocus(w->edit);
     else if (id == ID_PGEDIT) SetFocus(w->pgEdit);
-    else if (GetFocus() == w->edit || GetFocus() == w->pgEdit) SetFocus(w->hwnd);
+    else if (id == ID_SKIPEDIT) SetFocus(w->skipEdit);
+    else if (GetFocus() == w->edit || GetFocus() == w->pgEdit || GetFocus() == w->skipEdit) SetFocus(w->hwnd);
     Redraw(w);
 }
 
@@ -1393,6 +1497,7 @@ static void ToggleItem(Win* w, int id)
     switch (id) {
     case ID_STARTUP: w->startup = !w->startup; v = w->startup; break;
     case ID_NOTIFY:  w->notify  = !w->notify;  v = w->notify;  break;
+    case ID_SKIPEN:  w->skipEn  = !w->skipEn;  v = w->skipEn;  break;
     default:
         if (id >= ID_RULE_O && id <= ID_RULE_CH) {
             UINT bit = 1u << (id - ID_RULE_O);      // AUTO_RULE_O..CH = 1,2,4,8
@@ -1601,6 +1706,10 @@ static bool SaveAll(Win* w)
     g_settings.mode      = w->mode;
     g_settings.triggerVk = w->trig;
     g_settings.autoRules = w->rules;
+    g_settings.skipEnglish = w->skipEn;
+    wchar_t sw[1280];
+    GetWindowTextW(w->skipEdit, sw, 1280);
+    Settings_SetSkipWords(sw);              // ajratgichlarni (vergul, bo'shliq...) backend o'zi normallashtiradi
 
     g_settings.hkMode    = w->hk[0];
     g_settings.hkEnable  = w->hk[1];
@@ -1683,6 +1792,15 @@ static void OnMouseMove(Win* w, int x, int y)
         w->exHot = row; w->exHotX = onX;
         Redraw(w);
     }
+}
+
+// Standart istisnolarni (dasturlash muhitlari) lokal ro'yxatga qo'shadi — takrorsiz; saqlash — odatdagi Saqlash bilan
+static void AddDevExcludes(Win* w)
+{
+    int sel = w->exSel;
+    ForEachDefault([&](const wchar_t* name) { ExAdd(w, name); });
+    w->exSel = sel;                 // tanlov va siljish joyida qoladi
+    Relayout(w);
 }
 
 // ---- Sinov maydoni mantig'i ----
@@ -1811,7 +1929,7 @@ static void Activate(Win* w, int id, int x, int y)
         break;
     }
     case ID_APO: case ID_TRIG: OpenDrop(w, id); break;
-    case ID_STARTUP: case ID_NOTIFY:
+    case ID_STARTUP: case ID_NOTIFY: case ID_SKIPEN:
     case ID_RULE_O: case ID_RULE_G: case ID_RULE_SH: case ID_RULE_CH:
         ToggleItem(w, id);
         break;
@@ -1823,6 +1941,8 @@ static void Activate(Win* w, int id, int x, int y)
         Relayout(w);
         break;
     case ID_EDIT: SetFocusId(w, ID_EDIT, false); break;
+    case ID_SKIPEDIT: SetFocusId(w, ID_SKIPEDIT, false); break;
+    case ID_ADDDEV:   AddDevExcludes(w); break;
     case ID_ADD:  AddFromEdit(w); break;
     case ID_BROWSE: Browse(w); break;
     case ID_LIST: {
@@ -1894,7 +2014,8 @@ static bool OnKey(Win* w, const MSG& m)
     bool shift = (GetKeyState(VK_SHIFT) & 0x8000) != 0;
     bool inEx = (w->focus == ID_EDIT && GetFocus() == w->edit);
     bool inPg = (w->focus == ID_PGEDIT && GetFocus() == w->pgEdit);
-    bool inEdit = inEx || inPg;
+    bool inSk = (w->focus == ID_SKIPEDIT && GetFocus() == w->skipEdit);
+    bool inEdit = inEx || inPg || inSk;
 
     switch (vk) {
     case VK_TAB:
@@ -1909,11 +2030,12 @@ static bool OnKey(Win* w, const MSG& m)
         DoCancel(w);
         return true;
     case 0x41:                                      // Ctrl+A: hammasini belgilash
-        if (ctrl && inEdit) { SendMessageW(inPg ? w->pgEdit : w->edit, EM_SETSEL, 0, -1); return true; }
+        if (ctrl && inEdit) { SendMessageW(inPg ? w->pgEdit : inSk ? w->skipEdit : w->edit, EM_SETSEL, 0, -1); return true; }
         return false;
     case VK_RETURN:
         if (inPg) return false;                     // sinov maydonida Enter — yangi qator
         if (inEx) { AddFromEdit(w); return true; }
+        if (inSk) return true;                      // so'z istisnolari maydonida Enter Saqlash emas
         if (EnterActivates(w)) ActivateFocused(w);
         else DoSave(w);
         return true;
@@ -2076,6 +2198,12 @@ static LRESULT CALLBACK SettingsWndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM l
                                     0, 0, 10, 10, hwnd, (HMENU)(INT_PTR)ID_PGEDIT, g_hInst, NULL);
         SendMessageW(w->pgEdit, WM_SETFONT, (WPARAM)w->fPg, FALSE);
         SendMessageW(w->pgEdit, EM_LIMITTEXT, 4000, 0);
+
+        // Rejim sahifasi: foydalanuvchining istisno so'zlari (bir qatorli EDIT, ramka ichida)
+        w->skipEdit = CreateWindowExW(0, L"EDIT", L"", WS_CHILD | ES_AUTOHSCROLL,
+                                      0, 0, 10, 10, hwnd, (HMENU)(INT_PTR)ID_SKIPEDIT, g_hInst, NULL);
+        SendMessageW(w->skipEdit, WM_SETFONT, (WPARAM)w->fBody, FALSE);
+        SendMessageW(w->skipEdit, EM_LIMITTEXT, 1200, 0);
         SetWindowLongPtrW(w->pgEdit, GWLP_USERDATA, (LONG_PTR)w);
         w->pgOrig = (WNDPROC)SetWindowLongPtrW(w->pgEdit, GWLP_WNDPROC, (LONG_PTR)PgEditProc);
         w->pgEmpty = true;
@@ -2135,6 +2263,7 @@ static LRESULT CALLBACK SettingsWndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM l
             if (hi >= 0 && IsFocusable(w, w->it[hi])) { w->focus = w->it[hi].id; w->kbd = false; }
             if (hi >= 0 && w->it[hi].id == ID_EDIT) SetFocus(w->edit);
             if (hi >= 0 && w->it[hi].id == ID_PGEDIT) SetFocus(w->pgEdit);
+            if (hi >= 0 && w->it[hi].id == ID_SKIPEDIT) SetFocus(w->skipEdit);
             SetCapture(hwnd);
             Redraw(w);
         }
@@ -2174,6 +2303,10 @@ static LRESULT CALLBACK SettingsWndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM l
             if (HIWORD(wp) == EN_SETFOCUS) { w->focus = ID_EDIT; Redraw(w); }
             else if (HIWORD(wp) == EN_KILLFOCUS) Redraw(w);
         }
+        if (w && (HWND)lp == w->skipEdit) {
+            if (HIWORD(wp) == EN_SETFOCUS) { w->focus = ID_SKIPEDIT; Redraw(w); }
+            else if (HIWORD(wp) == EN_KILLFOCUS) Redraw(w);
+        }
         // sinov maydoni: o'zgarish, fokus (kartochka porlashi)
         if (w && (HWND)lp == w->pgEdit) {
             if (HIWORD(wp) == EN_CHANGE) OnPgChange(w);
@@ -2183,9 +2316,19 @@ static LRESULT CALLBACK SettingsWndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM l
         return 0;
 
     case WM_CTLCOLOREDIT:
-        if (w && ((HWND)lp == w->edit || (HWND)lp == w->pgEdit)) {
+        if (w && ((HWND)lp == w->edit || (HWND)lp == w->pgEdit || (HWND)lp == w->skipEdit)) {
             const UiTheme& th = Ui_Theme();
             SetTextColor((HDC)wp, th.text);
+            SetBkColor((HDC)wp, w->editBrCol);
+            return (LRESULT)w->editBr;
+        }
+        break;
+
+    case WM_CTLCOLORSTATIC:
+        // o'chiq (trigger rejimida) so'z istisnolari maydoni: xira matn, o'sha fon
+        if (w && (HWND)lp == w->skipEdit) {
+            const UiTheme& th = Ui_Theme();
+            SetTextColor((HDC)wp, th.textDim);
             SetBkColor((HDC)wp, w->editBrCol);
             return (LRESULT)w->editBr;
         }
@@ -2264,6 +2407,7 @@ void ShowSettingsPage(HWND parent, int page)
     w->apo      = g_settings.apo;
     w->startup  = Startup_IsEnabled();
     w->notify   = g_settings.notify;
+    w->skipEn   = g_settings.skipEnglish;
     w->mode     = g_settings.mode;
     w->trig     = g_settings.triggerVk;
     w->rules    = g_settings.autoRules;
@@ -2309,6 +2453,20 @@ void ShowSettingsPage(HWND parent, int page)
     SetAnim(w->an[AN_TOG + ID_CARD_AUTO], w->mode == MODE_AUTO ? 1.f : 0.f);
     SetAnim(w->an[AN_TOG + ID_STARTUP], w->startup ? 1.f : 0.f);
     SetAnim(w->an[AN_TOG + ID_NOTIFY], w->notify ? 1.f : 0.f);
+    SetAnim(w->an[AN_TOG + ID_SKIPEN], w->skipEn ? 1.f : 0.f);
+
+    // foydalanuvchining istisno so'zlari: ";" o'rniga ", " bilan ko'rsatiladi (saqlashda backend normallashtiradi)
+    {
+        wchar_t raw[1024], disp[1280];
+        Settings_GetSkipWords(raw, 1024);
+        int n = 0;
+        for (const wchar_t* c = raw; *c && n < 1270; ++c) {
+            if (*c == L';') { disp[n++] = L','; disp[n++] = L' '; }
+            else disp[n++] = *c;
+        }
+        disp[n] = 0;
+        SetWindowTextW(w->skipEdit, disp);
+    }
     for (int i = 0; i < 4; ++i)
         SetAnim(w->an[AN_TOG + ID_RULE_O + i], (w->rules >> i) & 1 ? 1.f : 0.f);
     Layout(w);
@@ -2329,7 +2487,7 @@ void ShowSettingsPage(HWND parent, int page)
     while (!w->done) {
         BOOL r = GetMessageW(&msg, NULL, 0, 0);
         if (r <= 0) { quit = (r == 0); if (quit) PostQuitMessage((int)msg.wParam); break; }
-        if ((msg.hwnd == hwnd || msg.hwnd == w->edit || msg.hwnd == w->pgEdit) && OnKey(w, msg)) continue;
+        if ((msg.hwnd == hwnd || msg.hwnd == w->edit || msg.hwnd == w->pgEdit || msg.hwnd == w->skipEdit) && OnKey(w, msg)) continue;
         TranslateMessage(&msg);
         DispatchMessageW(&msg);
     }

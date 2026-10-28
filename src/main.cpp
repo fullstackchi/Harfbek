@@ -184,15 +184,19 @@ static void ShowConvertMenu(HWND hWnd, int x, int y)
     HMENU menu = CreatePopupMenu();
     AppendMenuW(menu, MF_STRING, CMD_CONV_TODIGRAPH, T(S_CONV_TODIGRAPH));
     AppendMenuW(menu, MF_STRING, CMD_CONV_TOSPECIAL, T(S_CONV_TOSPECIAL));
+    AppendMenuW(menu, MF_STRING, CMD_CONV_CYR2LAT,   T(S_CONV_CYR2LAT));
     SetForegroundWindow(hWnd);
     g_menuOpen = true;
     int cmd = TrackPopupMenu(menu, TPM_RIGHTBUTTON | TPM_RETURNCMD, x, y, 0, hWnd, NULL);
     g_menuOpen = false;
     DestroyMenu(menu);
     PostMessageW(hWnd, WM_NULL, 0, 0);       // menyu to'g'ri yopilishi uchun
-    if (cmd == CMD_CONV_TODIGRAPH || cmd == CMD_CONV_TOSPECIAL) {
+    int dir = cmd == CMD_CONV_TODIGRAPH ? CONV_TO_DIGRAPH :
+              cmd == CMD_CONV_TOSPECIAL ? CONV_TO_SPECIAL :
+              cmd == CMD_CONV_CYR2LAT   ? CONV_CYR_TO_LAT : -1;
+    if (dir >= 0) {
         if (target) SetForegroundWindow(target);   // fokusni matn oynasiga qaytaramiz
-        TextConvert_Run(cmd == CMD_CONV_TODIGRAPH);
+        TextConvert_Run(dir);
     }
 }
 

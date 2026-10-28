@@ -27,6 +27,7 @@ struct Settings {
     WORD hkConvert;     // matnni o'girish menyusi
     bool notify;        // rejim/yoqish o'zgarganda ekranda bildirishnoma
     UINT autoRules;     // avto rejim qoidalari (AUTO_RULE_* bitlari)
+    bool skipEnglish;   // avto rejim: inglizcha so'zlar (ichki ro'yxat/evristika) asliga qaytsin
 };
 
 // Avto rejim qoidalari (Settings::autoRules bitlari)
@@ -48,6 +49,17 @@ void Settings_GetExcludes(wchar_t* out, int n);
 void Settings_SetExcludes(const wchar_t* list);
 // Exe nomi (faqat fayl nomi, istalgan registrda) ro'yxatda bormi (hook thread'i uchun)
 bool Settings_IsExcluded(const wchar_t* exeName);
+// Standart istisnolar (dasturlash muhitlari): ';' bilan ajratilgan exe nomlari,
+// kichik harfda. UI "Dasturlash muhitlarini qöşiş" tugmasi o'z ro'yxatiga qo'shadi.
+const wchar_t* Settings_DefaultExcludes();
+
+// Istisno so'zlar (avto rejim: so'z tugaganda asliga qaytariladi). Ajratgichlar
+// ; , bo'shliq tab \r \n; kichik harfda ';' bilan saqlanadi, maks 1023 belgi.
+// Thread-xavfsiz (SRWLOCK) — hook thread'i o'qiydi.
+void Settings_GetSkipWords(wchar_t* out, int n);
+void Settings_SetSkipWords(const wchar_t* list);
+// Faqat hook uchun: w[0..len) (kichik harf, apostrof — ') ro'yxatda bormi
+bool Settings_IsSkipWord(const wchar_t* w, int len);
 
 // Windows bilan ishga tushish (HKCU\...\Run)
 bool Startup_IsEnabled();

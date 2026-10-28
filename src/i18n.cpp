@@ -271,9 +271,29 @@ static const wchar_t* STR[S_STR_COUNT][LANG_COUNT] = {
     /*S_PG_MODE_BADGE*/   { L"Joriy rejim: %s", L"Текущий режим: %s", L"Current mode: %s" },
     /*S_PG_DONE*/         { L"Barçasi bajarildi!", L"Всё выполнено!", L"All done!" },
     /*S_PG_UNSAVED*/      { L"Rejim özgartirildi — sinaş uçun avval saqlang",
-                            L"Режим изменён — чтобы попробовать, сначала сохраните",
+                            L"Режим изменён — сначала сохраните",
                             L"Mode changed — save first to try it" },
     /*S_PG_TRY_NOW*/      { L"Hoziroq sinab köring", L"Попробовать сейчас", L"Try it now" },
+
+    // --- kirill -> lotin, inglizcha so'zlarni o'tkazib yuborish, dasturlash muhitlari ---
+    /*S_CONV_CYR2LAT*/    { L"Кирилл  →  Lotin",
+                            L"Кириллица  →  латиница",
+                            L"Cyrillic  →  Latin" },
+    /*S_SET_SKIP_EN*/     { L"Inglizça sözlarga tegmaslik",
+                            L"Не трогать английские слова",
+                            L"Leave English words alone" },
+    /*S_SET_SKIP_EN_HINT*/{ L"shop, search, o'clock kabi sözlar söz tugaşi bilan asliga qaytadi",
+                            L"Слова вроде shop, search, o'clock возвращаются в исходный вид в конце слова",
+                            L"Words like shop, search, o'clock revert to the original when the word ends" },
+    /*S_SET_SKIP_WORDS*/  { L"Mening istisno sözlarim",
+                            L"Мои слова-исключения",
+                            L"My exception words" },
+    /*S_SET_SKIP_WORDS_HINT*/ { L"Vergul yoki böşliq bilan ajrating",
+                            L"Разделяйте запятой или пробелом",
+                            L"Separate with commas or spaces" },
+    /*S_EX_ADD_DEV*/      { L"Dasturlaş muhitlarini qöşiş",
+                            L"Добавить среды разработки",
+                            L"Add code editors" },
 };
 
 const wchar_t* T(StrId id)

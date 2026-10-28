@@ -4,11 +4,25 @@
 #include "autoconv.h"
 #include "settings.h"   // AUTO_RULE_* (faqat makrolar)
 
-void Auto_Reset(AutoState& s)
+// Juftlik holati (prev/undo) — so'z buferiga tegmaydi
+static void ResetPair(AutoState& s)
 {
     s.prev    = 0;
     s.undo[0] = s.undo[1] = 0;
     s.canUndo = false;
+}
+
+static void ResetWord(AutoState& s)
+{
+    s.origLen = 0;
+    s.scrLen  = 0;
+    s.lost    = false;
+}
+
+void Auto_Reset(AutoState& s)
+{
+    ResetPair(s);
+    ResetWord(s);
 }
 
 bool Auto_IsApostrophe(wchar_t c)
@@ -44,9 +58,27 @@ static wchar_t Combine(wchar_t prev, wchar_t ch, unsigned rules)
 AutoAction Auto_OnChar(AutoState& s, wchar_t ch, unsigned rules)
 {
     AutoAction a = { AUTO_NONE, { 0, 0 }, 0 };
-    wchar_t sp = ch ? Combine(s.prev, ch, rules) : 0;
+    if (!ch) {                   // so'zga kirmaydigan belgi — so'z qaytarishsiz tugaydi
+        ResetPair(s);
+        ResetWord(s);
+        return a;
+    }
+    wchar_t sp = Combine(s.prev, ch, rules);
+
+    // So'z buferi: asl belgi qo'shiladi; almashtirishda oldingi ekrandagi
+    // belgi endi ikki asl belgini bildiradi (s + h -> ş).
+    if (!s.lost) {
+        if (s.origLen >= AUTO_WORD_MAX || (sp && s.scrLen == 0)) {
+            s.lost = true;       // juda uzun so'z — oxirigacha kuzatilmaydi
+        } else {
+            s.orig[s.origLen++] = ch;
+            if (sp) s.span[s.scrLen - 1] = 2;
+            else    s.span[s.scrLen++] = 1;
+        }
+    }
+
     if (!sp) {
-        s.prev    = ch;      // 0 bo'lsa — keyingi belgi bilan juftlashmaydi
+        s.prev    = ch;
         s.canUndo = false;
         return a;
     }
@@ -68,9 +100,48 @@ AutoAction Auto_OnBackspace(AutoState& s)
         a.text[0] = s.undo[0];
         a.text[1] = s.undo[1];
         a.len     = 2;
+        // ş -> sh: ekrandagi bitta belgi yana ikki oddiy belgi (almashtirish emas)
+        if (!s.lost && s.scrLen > 0 && s.span[s.scrLen - 1] == 2) {
+            s.span[s.scrLen - 1] = 1;
+            s.span[s.scrLen++]   = 1;
+        }
+    } else if (!s.lost) {
+        if (s.scrLen > 0) s.origLen -= s.span[--s.scrLen];   // oxirgi ekrandagi belgi o'chdi
+        else              s.lost = true;                     // so'z boshidan oldingi matn o'chyapti
     }
     // Undo'dan keyin ham tozalaymiz: tiklangan "sh" qayta almashmasin
     // (yana "h" -> "shh"), ikkinchi Backspace esa oddiy o'chiradi.
-    Auto_Reset(s);
+    ResetPair(s);
     return a;
+}
+
+bool Auto_OnWordEnd(AutoState& s, AutoSkipFn skip, void* ctx, wchar_t* text, int* len, int* bs)
+{
+    bool revert = false;
+    if (!s.lost && s.origLen > 0 && skip) {
+        int replaced = 0;
+        for (int i = 0; i < s.scrLen; ++i) if (s.span[i] == 2) replaced++;
+        if (replaced) {
+            // Tekshiruv kaliti: kichik harf (so'zda faqat lotin harflari), apostrof -> '
+            wchar_t key[AUTO_WORD_MAX];
+            for (int i = 0; i < s.origLen; ++i) {
+                wchar_t c = s.orig[i];
+                if (c >= L'A' && c <= L'Z') c = (wchar_t)(c + 32);
+                else if (Auto_IsApostrophe(c)) c = L'\'';
+                key[i] = c;
+            }
+            // Boshi/oxiridagi apostroflar so'zga kirmaydi: 'shop' (qo'shtirnoq), teachers'
+            int b = 0, e = s.origLen;
+            while (b < e && key[b] == L'\'')     b++;
+            while (e > b && key[e - 1] == L'\'') e--;
+            if (e > b && skip(key + b, e - b, ctx)) {
+                for (int i = 0; i < s.origLen; ++i) text[i] = s.orig[i];
+                *len   = s.origLen;
+                *bs    = s.scrLen;
+                revert = true;
+            }
+        }
+    }
+    Auto_Reset(s);
+    return revert;
 }

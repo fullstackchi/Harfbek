@@ -54,6 +54,11 @@ shu yorliqdan ochasiz.
 - **Zamonaviy interfeys** — yorug' va qorong'i mavzu Windows sozlamasiga qarab
   avtomatik tanlanadi; tray ikonkaga chap tugma bilan tezkor panel ochiladi
   (o'ng tugma — oddiy menyu).
+- **Inglizcha so'zlar buzilmaydi** — avto rejimda `shop`, `search`, `o'clock` kabi
+  inglizcha so'zlar so'z tugagach avtomatik asliga qaytadi (Sozlamalarda o'chirish
+  va o'z istisno so'zlaringizni qo'shish mumkin).
+- **Kirill → Lotin** — Ctrl + o'ng tugma (yoki tezkor tugma) menyusida kirill
+  matnni yangi alifbodagi lotinga (ş ç ö ğ) o'giruvchi uchinchi band bor.
 - **Sinab köriş maydoni** — Sozlamalardagi alohida sahifa: shu yerda yozib, Harfbek
   joriy rejimda qanday ishlashini jonli ko'rasiz; maxsus harflar sanagichi va kichik
   sinovlar bor. Yozganingiz hech qayerga saqlanmaydi.

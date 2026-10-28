@@ -61,6 +61,10 @@ enum StrId {
     S_NAV_PLAYGROUND, S_PG_HINT, S_PG_PLACEHOLDER, S_PG_CHALLENGES, S_PG_CLEAR,
     S_PG_COUNTER, S_PG_MODE_BADGE, S_PG_DONE, S_PG_UNSAVED, S_PG_TRY_NOW,
 
+    // kirill -> lotin, inglizcha so'zlarni o'tkazib yuborish, dasturlash muhitlari
+    S_CONV_CYR2LAT, S_SET_SKIP_EN, S_SET_SKIP_EN_HINT, S_SET_SKIP_WORDS,
+    S_SET_SKIP_WORDS_HINT, S_EX_ADD_DEV,
+
     S_STR_COUNT
 };
 

@@ -24,6 +24,7 @@
 #include "app.h"
 #include "config.h"
 #include "autoconv.h"
+#include "autoskip.h"   // AutoSkip_IsForeign (light)
 
 static HHOOK           g_hook = NULL;       // klaviatura hook
 static HHOOK           g_mouseHook = NULL;  // sichqoncha hook (Ctrl+o'ng-tugma)
@@ -306,6 +307,10 @@ static AutoState g_auto       = {};     // oxirgi belgi va undo ma'lumoti
 static HWND      g_autoFg     = NULL;   // oxirgi foreground oyna (almashsa holat tozalanadi)
 static DWORD     g_autoFgTid  = 0;      // uning thread'i (klaviatura layout'i shu thread'niki)
 static bool      g_autoFgTerm = false;  // u terminal yoki istisno ilovami (har tugmada tekshirmaymiz)
+// Joriy so'z boshidagi fokus va caret (so'zni qaytarishdan oldin solishtiriladi)
+static HWND      g_wordFocus  = NULL;   // NULL — olinmagan (qaytarilmaydi)
+static HWND      g_wordCaretW = NULL;   // caret egasi (NULL — caret yo'q, tekshirilmaydi)
+static RECT      g_wordCaret  = {};     // caret, g_wordCaretW client koordinatalarida
 
 
 // Foreground oyna istisno ilovalar ro'yxatidagi dasturnikimi (settings.h).
@@ -353,26 +358,77 @@ static bool IsNavKey(UINT vk)
     return false;
 }
 
-// Bitta Backspace (oldingi belgini o'chiradi) + text (1-2 belgi) ni BITTA
-// SendInput'da yuboradi (atomik; o'zimizning imzo bilan — hook ularni qayta
-// ishlamaydi).
-static void AutoSend(const wchar_t* text, int len)
+// So'z istisnomi (autoconv callback'i): ichki inglizcha ro'yxat/evristika
+// (sozlamada yoqilgan bo'lsa) yoki foydalanuvchining istisno so'zlari.
+// Faqat almashtirish bo'lgan so'z tugaganda chaqiriladi — heap yo'q.
+static bool AutoSkipCheck(const wchar_t* w, int len, void*)
 {
-    INPUT seq[2 + 2 * 2];
+    return (g_settings.skipEnglish && AutoSkip_IsForeign(w, len)) || Settings_IsSkipWord(w, len);
+}
+
+// So'zni qaytarish ekrandagi so'z kursor oldida turibdi deb faraz qiladi (bs ta
+// Backspace). Bir oyna ichidagi fokus almashuvi (ilovaning o'zi, sensorli/qalam
+// bosishi) reset hodisalarida ko'rinmaydi — shuning uchun so'zning birinchi
+// belgisida fokus/caret eslab qolinadi va qaytarishdan oldin solishtiriladi.
+// GetGUIThreadInfo xabar yubormaydi — hook thread'ida xavfsiz, heap yo'q.
+static void WordFocusSave()
+{
+    GUITHREADINFO gi = { sizeof(gi) };
+    if (!GetGUIThreadInfo(g_autoFgTid, &gi)) gi.hwndFocus = gi.hwndCaret = NULL;
+    g_wordFocus  = gi.hwndFocus;
+    // Bo'sh caret (balandligi 0) — qatorni solishtirib bo'lmaydi, tekshirilmaydi
+    g_wordCaretW = (gi.rcCaret.bottom > gi.rcCaret.top) ? gi.hwndCaret : NULL;
+    g_wordCaret  = gi.rcCaret;
+}
+
+// Fokus so'z boshidagi bilan bir xilmi. Shubha bo'lsa false (qaytarilmaydi —
+// eng yomoni inglizcha so'z almashtirilgan holda qoladi, matn o'chmaydi).
+// Caret faqat so'z boshida bo'lgan bo'lsa tekshiriladi (Chromium/TSF ilovalarda
+// odatda yo'q): boshqa egasi/yo'qoldi, boshqa qator yoki so'z boshidan chapda —
+// rad. Caret kechiksa ham so'z boshidan chapga o'tmaydi — soxta rad bo'lmaydi.
+static bool WordFocusSame()
+{
+    GUITHREADINFO gi = { sizeof(gi) };
+    if (!g_wordFocus || !GetGUIThreadInfo(g_autoFgTid, &gi)) return false;
+    if (gi.hwndFocus != g_wordFocus) return false;
+    if (gi.flags & (GUI_INMENUMODE | GUI_POPUPMENUMODE | GUI_SYSTEMMENUMODE | GUI_INMOVESIZE))
+        return false;
+    if (g_wordCaretW) {
+        const RECT& c = gi.rcCaret;
+        if (gi.hwndCaret != g_wordCaretW) return false;
+        if (c.top >= g_wordCaret.bottom || c.bottom <= g_wordCaret.top) return false;   // boshqa qator
+        if (c.left < g_wordCaret.left) return false;
+    }
+    return true;
+}
+
+// bs ta Backspace + text (Unicode belgilar) + (term bo'lsa) so'zni tugatgan
+// tugmaning o'zi — BITTA SendInput'da (atomik; o'zimizning imzo bilan — hook
+// ularni qayta ishlamaydi). Almashtirish/undo: bs = 1, 1-2 belgi. So'zni
+// qaytarish: ekrandagi so'z o'chiriladi, asl belgilar yoziladi, tugatuvchi asl
+// vk/scan bilan qayta yuboriladi (Shift bosilgan bo'lsa "!" kabi belgi, Enter/Tab
+// ham to'g'ri chiqadi) — faqat bosilishi: fizik qo'yib yuborish keyin o'z yo'li
+// bilan keladi (juftlik saqlanadi).
+static void AutoSend(int bs, const wchar_t* text, int len, const KBDLLHOOKSTRUCT* term)
+{
+    INPUT seq[2 * AUTO_WORD_MAX + 2 * AUTO_WORD_MAX + 1];   // stekda (~5 KB), heap yo'q
     int m = 0;
-    for (int up = 0; up < 2; ++up) {
+    if (bs > AUTO_WORD_MAX)  bs  = AUTO_WORD_MAX;
+    if (len > AUTO_WORD_MAX) len = AUTO_WORD_MAX;
+    for (int i = 0; i < 2 * (bs + len); ++i) {
+        bool up = (i & 1) != 0;
         seq[m] = INPUT{}; seq[m].type = INPUT_KEYBOARD;
-        seq[m].ki.wVk = VK_BACK; seq[m].ki.wScan = 0x0E;
-        seq[m].ki.dwFlags = up ? KEYEVENTF_KEYUP : 0;
+        if (i < 2 * bs) { seq[m].ki.wVk = VK_BACK; seq[m].ki.wScan = 0x0E; }
+        else            { seq[m].ki.wScan = text[i / 2 - bs]; seq[m].ki.dwFlags = KEYEVENTF_UNICODE; }
+        if (up) seq[m].ki.dwFlags |= KEYEVENTF_KEYUP;
         seq[m].ki.dwExtraInfo = kInjectSig; m++;
     }
-    for (int i = 0; i < len && i < 2; ++i) {
-        for (int up = 0; up < 2; ++up) {
-            seq[m] = INPUT{}; seq[m].type = INPUT_KEYBOARD;
-            seq[m].ki.wScan = text[i];
-            seq[m].ki.dwFlags = KEYEVENTF_UNICODE | (up ? KEYEVENTF_KEYUP : 0);
-            seq[m].ki.dwExtraInfo = kInjectSig; m++;
-        }
+    if (term) {
+        seq[m] = INPUT{}; seq[m].type = INPUT_KEYBOARD;
+        seq[m].ki.wVk   = (WORD)term->vkCode;
+        seq[m].ki.wScan = (WORD)term->scanCode;
+        seq[m].ki.dwFlags = (term->flags & LLKHF_EXTENDED) ? KEYEVENTF_EXTENDEDKEY : 0;
+        seq[m].ki.dwExtraInfo = kInjectSig; m++;
     }
     SendInput(m, seq, sizeof(INPUT));
 }
@@ -409,14 +465,16 @@ static bool AutoKeyDown(const KBDLLHOOKSTRUCT* k)
     if (vk == VK_BACK) {
         AutoAction a = Auto_OnBackspace(g_auto);
         if (a.kind != AUTO_UNDO) return false;   // oddiy Backspace
-        AutoSend(a.text, a.len);                 // ş -> sh
+        AutoSend(1, a.text, a.len, NULL);        // ş -> sh
         return true;
     }
-    if (IsNavKey(vk)) { Auto_Reset(g_auto); return false; }
+    // Enter / Tab — so'zni tugatadi (keyin navigatsiya kabi holat tozalanadi)
+    bool term = (vk == VK_RETURN || vk == VK_TAB);
+    if (!term && IsNavKey(vk)) { Auto_Reset(g_auto); return false; }
 
     // Shift'siz belgi; yuqori bit — dead-key belgisi, olib tashlaymiz.
     // 0 — belgisiz tugma (F1, media...) -> holat tozalanadi.
-    UINT    r = MapVirtualKeyExW(vk, MAPVK_VK_TO_CHAR, GetKeyboardLayout(g_autoFgTid));
+    UINT    r = term ? 0 : MapVirtualKeyExW(vk, MAPVK_VK_TO_CHAR, GetKeyboardLayout(g_autoFgTid));
     wchar_t c = (wchar_t)(r & 0x7FFFFFFF);
     bool shift = IsDown(VK_SHIFT);
     wchar_t ch = 0;
@@ -428,11 +486,23 @@ static bool AutoKeyDown(const KBDLLHOOKSTRUCT* k)
         ch = (shift ^ caps) ? c : (wchar_t)(c - L'A' + L'a');
     } else if (!shift && Auto_IsApostrophe(c)) {
         ch = c;                                 // Shift bilan (US: ") apostrof emas
+    } else if (c) {
+        term = true;                            // bo'shliq, raqam, tinish belgisi — so'z tugadi
     }
 
+    if (term) {
+        wchar_t text[AUTO_WORD_MAX];
+        int     len = 0, bs = 0;
+        if (!Auto_OnWordEnd(g_auto, AutoSkipCheck, NULL, text, &len, &bs)) return false;
+        if (!WordFocusSame()) return false;     // fokus/caret siljigan — boshqa matnga tegmaymiz
+        AutoSend(bs, text, len, k);             // şop + ' ' -> shop + ' '
+        return true;                            // tugatuvchi tugma qayta yuborildi
+    }
+
+    if (ch && g_auto.origLen == 0 && !g_auto.lost) WordFocusSave();   // so'zning birinchi belgisi
     AutoAction a = Auto_OnChar(g_auto, ch, g_settings.autoRules);
     if (a.kind != AUTO_REPLACE) return false;
-    AutoSend(a.text, a.len);                    // oldingi harfni o'chirib, maxsus harfni yozamiz
+    AutoSend(1, a.text, a.len, NULL);           // oldingi harfni o'chirib, maxsus harfni yozamiz
     return true;                                // apostrof / h tugmasining o'zi yutiladi
 }
 
