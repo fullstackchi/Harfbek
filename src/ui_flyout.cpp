@@ -1,6 +1,8 @@
 // Tray flyout: tray ikonkasi chap tugma bilan bosilganda chiqadigan kichik
 // panel (Win11 quick settings uslubida). Ichida: sarlavha + holat, "Yoqilgan"
-// toggle, rejim segmenti (Trigger | Avto), Sozlamalar / Tanişuv / Çiqiş.
+// toggle, rejim segmenti (Trigger | Avto), avto rejimda — oxirgi yozilgan
+// ilova qatori (shu dasturda avto rejim yoqiq/o'chiq — istisnolar ro'yxati),
+// "Sinab köriş", Sozlamalar / Tanişuv / Çiqiş.
 //
 // Resurslar: oyna faqat ochiq paytda yashaydi. Fokus yo'qolsa darhol
 // DestroyWindow — shriftlar WM_NCDESTROY da o'chiriladi, Ui_End GDI+ ni
@@ -9,12 +11,15 @@
 #include "app.h"
 #include <shellapi.h>   // SHAppBarMessage
 
+#pragma optimize("s", on)   // UI — hajm uchun (exe budjeti; ui_gfx.cpp ga qarang)
+
 // Elementlar (hit-test va klaviatura fokus tartibi)
 enum {
     FI_NONE = -1,
     FI_TOGGLE = 0,      // "Yoqilgan"
     FI_SEG_TRIGGER,     // segment: Trigger
     FI_SEG_AUTO,        // segment: Avto
+    FI_APP,             // ilova qatori toggle'i (faqat avto rejimda)
     FI_PLAYGROUND,      // "Sinab köriş" (keng qator)
     FI_SETTINGS,
     FI_GUIDE,
@@ -23,7 +28,8 @@ enum {
 };
 
 static const int  kW96       = 300;   // panel kengligi (96 DPI)
-static const int  kH96       = 326;   // balandligi
+static const int  kH96       = 326;   // balandligi (ilova qatorisiz)
+static const int  kApp96     = 64;    // ilova qatori (56) + oraliq — bo'lsa balandlikka qo'shiladi
 static const int  kGap96     = 12;    // ish maydoni chetidan masofa
 static const int  kSlide96   = 10;    // ochilishda sirpanish masofasi
 static const DWORD kOpenMs   = 180;
@@ -47,6 +53,13 @@ static struct {
     int    focus;         // klaviatura fokusi
     bool   kbd;           // klaviatura ishlatildimi (fokus halqasi faqat shunda)
     bool   tracking;      // TrackMouseEvent o'rnatilgan
+    POINT  anchor;        // tray ikonkasi (balandlik o'zgarsa qayta joylash uchun)
+    // Ilova qatori (avto rejim, oxirgi yozilgan ilova tirik bo'lsa)
+    bool    app;
+    bool    appTerm;      // terminal — avto rejim doim o'chiq, toggle o'chiq
+    wchar_t appExe[MAX_PATH];   // exe fayl nomi (istisnolar ro'yxati uchun)
+    wchar_t appName[64];        // ko'rsatiladigan nom (.exe siz)
+    UiAnim  appTog;       // knob: 1 — avto rejim shu dasturda ishlaydi
 } g_fly;
 
 static DWORD g_flyClosedTick = 0;   // fokus yo'qolib yopilgan vaqt (tray qayta bosilishini ajratish uchun)
@@ -56,7 +69,7 @@ static DWORD g_flyClosedTick = 0;   // fokus yo'qolib yopilgan vaqt (tray qayta 
 // ---------------------------------------------------------------------
 struct FlyLayout {
     RECT header, status, card, toggleRow, toggleLabel, toggle, divider,
-         segLabel, seg, segOpt[2], play, btn[3];
+         segLabel, seg, segOpt[2], app, appName, appState, appToggle, play, btn[3];
 };
 
 static RECT Rc(int dpi, int x, int y, int w, int h)
@@ -80,9 +93,21 @@ static void Layout(int dpi, FlyLayout& L)
     int half = (L.seg.right - L.seg.left) / 2;
     L.segOpt[0] = L.seg; L.segOpt[0].right = L.seg.left + half;
     L.segOpt[1] = L.seg; L.segOpt[1].left  = L.seg.left + half;
-    L.play        = Rc(dpi, p, 198, w, 40);
+    const int dy = g_fly.app ? kApp96 : 0;   // ilova qatori pastdagilarni suradi
+    L.app         = Rc(dpi, p, 198, w, 56);
+    L.appName     = Rc(dpi, p + 16, 206, w - 90, 22);
+    L.appState    = Rc(dpi, p + 16, 228, w - 90, 18);
+    L.appToggle   = Rc(dpi, p + w - 16 - 48, 212, 48, 28);
+    L.play        = Rc(dpi, p, 198 + dy, w, 40);
     const int bw = (w - 2 * 8) / 3;
-    for (int i = 0; i < 3; ++i) L.btn[i] = Rc(dpi, p + i * (bw + 8), 246, bw, 64);
+    for (int i = 0; i < 3; ++i) L.btn[i] = Rc(dpi, p + i * (bw + 8), 246 + dy, bw, 64);
+}
+
+// Ilova toggle'ini bosish mumkinmi: terminal emas va Sozlamalar oynasi yopiq
+// (ochiq bo'lsa uning lokal ro'yxati yopilganda bu o'zgarish ustidan yozadi).
+static bool AppToggleEnabled()
+{
+    return g_fly.app && !g_fly.appTerm && !SettingsUi_IsOpen();
 }
 
 static int HitTest(POINT pt)
@@ -92,6 +117,7 @@ static int HitTest(POINT pt)
     if (PtInRect(&row, pt))         return FI_TOGGLE;     // butun qator bosiladi
     if (PtInRect(&L.segOpt[0], pt)) return FI_SEG_TRIGGER;
     if (PtInRect(&L.segOpt[1], pt)) return FI_SEG_AUTO;
+    if (AppToggleEnabled() && PtInRect(&L.app, pt)) return FI_APP;
     if (PtInRect(&L.play, pt))      return FI_PLAYGROUND;
     for (int i = 0; i < 3; ++i)
         if (PtInRect(&L.btn[i], pt)) return FI_SETTINGS + i;
@@ -113,7 +139,8 @@ static void CleanLabel(const wchar_t* s, wchar_t* out, int n)
 // ---------------------------------------------------------------------
 static bool AnyRunning()
 {
-    if (g_fly.open.running || g_fly.toggle.running || g_fly.seg.running) return true;
+    if (g_fly.open.running || g_fly.toggle.running || g_fly.seg.running || g_fly.appTog.running)
+        return true;
     for (int i = 0; i < FI_COUNT; ++i) if (g_fly.hov[i].running) return true;
     return false;
 }
@@ -159,9 +186,76 @@ static void Close()
     if (g_fly.hwnd) DestroyWindow(g_fly.hwnd);
 }
 
+// Ilova qatori ma'lumoti: avto rejimda hook eslagan oxirgi yozilgan oyna hali
+// tirik bo'lsa — jarayon exe nomi (main thread; ochilishda va rejim o'zgarganda).
+static void LoadApp()
+{
+    g_fly.app = false;
+    if (g_settings.mode != MODE_AUTO) return;
+    HWND w = Hook_GetLastTypingWindow();
+    DWORD pid = 0;
+    if (!w || !IsWindow(w) || !GetWindowThreadProcessId(w, &pid) || !pid) return;
+    HANDLE h = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, pid);
+    if (!h) return;
+    wchar_t path[MAX_PATH];
+    DWORD   n  = MAX_PATH;
+    bool    ok = QueryFullProcessImageNameW(h, 0, path, &n) != 0;
+    CloseHandle(h);
+    if (!ok) return;
+    const wchar_t* name = path;
+    for (const wchar_t* q = path; *q; ++q)
+        if (*q == L'\\') name = q + 1;
+    lstrcpynW(g_fly.appExe, name, MAX_PATH);
+    lstrcpynW(g_fly.appName, name, 64);
+    int len = lstrlenW(g_fly.appName);
+    if (len > 4 && lstrcmpiW(g_fly.appName + len - 4, L".exe") == 0) g_fly.appName[len - 4] = 0;
+    g_fly.appTerm = Hook_IsTerminalWindow(w);
+    g_fly.app     = true;
+    g_fly.appTog.value = g_fly.appTog.to =
+        (!g_fly.appTerm && !Settings_IsExcluded(g_fly.appExe)) ? 1.0f : 0.0f;
+}
+
+// Istisnolar ro'yxatiga qo'shish / olish — darhol saqlanadi, hook keshi
+// (foreground istisnomi) yangilanadi.
+static void ToggleApp()
+{
+    wchar_t list[1024], out[1024 + MAX_PATH + 2];
+    Settings_GetExcludes(list, 1024);
+    out[0] = 0;
+    if (Settings_IsExcluded(g_fly.appExe)) {
+        // olish: ro'yxat qayta yig'iladi, shu nom (registrsiz) tushib qoladi
+        for (wchar_t* s = list; *s; ) {
+            wchar_t* e = s;
+            while (*e && *e != L';') e++;
+            int  tl   = (int)(e - s);
+            bool last = *e == 0;
+            *e = 0;
+            if (tl && CompareStringOrdinal(s, tl, g_fly.appExe, -1, TRUE) != CSTR_EQUAL) {
+                if (out[0]) lstrcatW(out, L";");
+                lstrcatW(out, s);
+            }
+            s = last ? e : e + 1;
+        }
+    } else {
+        lstrcpyW(out, list);
+        if (out[0]) lstrcatW(out, L";");
+        lstrcatW(out, g_fly.appExe);   // 1023 dan oshsa Settings_SetExcludes kesadi
+    }
+    Settings_SetExcludes(out);
+    Settings_Save();
+    Hook_ResetTriggerState();
+    // Haqiqiy holat (ro'yxat to'la bo'lib qo'shilmagan bo'lishi mumkin)
+    Ui_AnimTo(g_fly.appTog, Settings_IsExcluded(g_fly.appExe) ? 0.0f : 1.0f, kStateMs);
+    StartTimer();
+    InvalidateRect(g_fly.hwnd, NULL, FALSE);
+}
+
 static void Activate(int item)
 {
     switch (item) {
+    case FI_APP:
+        if (AppToggleEnabled()) ToggleApp();
+        break;
     case FI_TOGGLE:
         ToggleEnabled();                         // u Flyout_Refresh ni chaqiradi
         break;
@@ -278,6 +372,22 @@ static void Paint(HDC dc)
         Ui_DrawFocusRing(dc, fr, segR + Ui_S(3, dpi));
     }
 
+    // Ilova qatori: nom, holat matni, toggle (yoqiq — avto rejim shu dasturda ishlaydi)
+    if (g_fly.app) {
+        bool  en = AppToggleEnabled();
+        float h  = en ? g_fly.hov[FI_APP].value : 0.0f;
+        int   r8 = Ui_S(8, dpi);
+        Ui_FillRound(dc, L.app, r8, Ui_Mix(t.surface, t.surfaceHover, h));
+        Ui_StrokeRound(dc, L.app, r8, t.border, 1);
+        Ui_Text(dc, g_fly.appName, L.appName, g_fly.fSemi, t.text,
+                DT_SINGLELINE | DT_VCENTER | DT_NOPREFIX | DT_END_ELLIPSIS);
+        StrId sid = g_fly.appTerm ? S_FLY_APP_TERM :
+                    (g_fly.appTog.to > 0.5f ? S_FLY_APP_ON : S_FLY_APP_OFF);
+        Ui_Text(dc, T(sid), L.appState, g_fly.fSmall, t.textDim,
+                DT_SINGLELINE | DT_VCENTER | DT_NOPREFIX | DT_END_ELLIPSIS);
+        Ui_DrawToggle(dc, L.appToggle, g_fly.appTog.value, h, en, g_fly.kbd && g_fly.focus == FI_APP);
+    }
+
     // "Sinab köriş" — keng qator: accent tusli fon, chapda accent kvadrat ichida
     // qalam glifi, o'ngda chevron (hover'da biroz o'ngga suriladi)
     {
@@ -338,14 +448,22 @@ static void Paint(HDC dc)
 // ---------------------------------------------------------------------
 //  Klaviatura
 // ---------------------------------------------------------------------
-// Fokus to'xtash joylari: toggle, segment (bitta), "Sinab köriş", 3 ta tugma
+// Fokus to'xtash joylari: toggle, segment (bitta), ilova toggle'i (bosiladigan
+// bo'lsa), "Sinab köriş", 3 ta tugma
 static int NextFocus(int f, int dir)
 {
-    static const int order[6] = { FI_TOGGLE, FI_SEG_TRIGGER, FI_PLAYGROUND, FI_SETTINGS, FI_GUIDE, FI_EXIT };
+    int order[7], cnt = 0;
+    order[cnt++] = FI_TOGGLE;
+    order[cnt++] = FI_SEG_TRIGGER;
+    if (AppToggleEnabled()) order[cnt++] = FI_APP;
+    order[cnt++] = FI_PLAYGROUND;
+    order[cnt++] = FI_SETTINGS;
+    order[cnt++] = FI_GUIDE;
+    order[cnt++] = FI_EXIT;
     int cur = 0;
     int ff = (f == FI_SEG_AUTO) ? FI_SEG_TRIGGER : f;
-    for (int i = 0; i < 6; ++i) if (order[i] == ff) cur = i;
-    cur = (cur + dir + 6) % 6;
+    for (int i = 0; i < cnt; ++i) if (order[i] == ff) cur = i;
+    cur = (cur + dir + cnt) % cnt;
     return order[cur];
 }
 
@@ -429,6 +547,7 @@ static LRESULT CALLBACK FlyProc(HWND h, UINT msg, WPARAM wp, LPARAM lp)
             Ui_AnimStep(g_fly.open);
             Ui_AnimStep(g_fly.toggle);
             Ui_AnimStep(g_fly.seg);
+            Ui_AnimStep(g_fly.appTog);
             for (int i = 0; i < FI_COUNT; ++i) Ui_AnimStep(g_fly.hov[i]);
             if (opening) ApplyOpenFrame();
             if (!AnyRunning()) KillTimer(h, UI_ANIM_TIMER);
@@ -527,9 +646,25 @@ static void PlaceNear(POINT anchor, int w, int hgt, int dpi)
     g_fly.pos.y = y;
 }
 
+static int FlyHeight96()
+{
+    return kH96 + (g_fly.app ? kApp96 : 0);
+}
+
 void Flyout_Refresh()
 {
     if (!g_fly.hwnd) return;
+    // Rejim almashgan bo'lsa ilova qatori paydo bo'ladi / yo'qoladi — panel
+    // balandligi o'zgaradi va taskbar chetiga qayta yopishtiriladi.
+    bool hadApp = g_fly.app;
+    LoadApp();
+    if (g_fly.app != hadApp) {
+        if (g_fly.focus == FI_APP) g_fly.focus = FI_SEG_TRIGGER;
+        int w = Ui_S(kW96, g_fly.dpi), hgt = Ui_S(FlyHeight96(), g_fly.dpi);
+        PlaceNear(g_fly.anchor, w, hgt, g_fly.dpi);
+        SetWindowPos(g_fly.hwnd, NULL, g_fly.pos.x, g_fly.pos.y, w, hgt,
+                     SWP_NOZORDER | SWP_NOACTIVATE);
+    }
     Ui_AnimTo(g_fly.toggle, g_settings.enabled ? 1.0f : 0.0f, kStateMs);
     Ui_AnimTo(g_fly.seg, g_settings.mode == MODE_AUTO ? 1.0f : 0.0f, kStateMs);
     StartTimer();
@@ -561,8 +696,10 @@ void Flyout_Toggle(POINT anchor)
     g_fly.dpi = Ui_Dpi(NULL);
     g_fly.toggle.value = g_fly.toggle.to = g_settings.enabled ? 1.0f : 0.0f;
     g_fly.seg.value    = g_fly.seg.to    = g_settings.mode == MODE_AUTO ? 1.0f : 0.0f;
+    g_fly.anchor = anchor;
+    LoadApp();
 
-    int w = Ui_S(kW96, g_fly.dpi), hgt = Ui_S(kH96, g_fly.dpi);
+    int w = Ui_S(kW96, g_fly.dpi), hgt = Ui_S(FlyHeight96(), g_fly.dpi);
     PlaceNear(anchor, w, hgt, g_fly.dpi);
 
     bool anim = Ui_AnimationsEnabled();

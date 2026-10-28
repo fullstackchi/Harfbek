@@ -17,6 +17,7 @@ static void ResetWord(AutoState& s)
     s.origLen = 0;
     s.scrLen  = 0;
     s.lost    = false;
+    s.undone  = 0;
 }
 
 void Auto_Reset(AutoState& s)
@@ -104,15 +105,43 @@ AutoAction Auto_OnBackspace(AutoState& s)
         if (!s.lost && s.scrLen > 0 && s.span[s.scrLen - 1] == 2) {
             s.span[s.scrLen - 1] = 1;
             s.span[s.scrLen++]   = 1;
+            s.undone = s.scrLen;
         }
     } else if (!s.lost) {
         if (s.scrLen > 0) s.origLen -= s.span[--s.scrLen];   // oxirgi ekrandagi belgi o'chdi
         else              s.lost = true;                     // so'z boshidan oldingi matn o'chyapti
+        if (s.scrLen < s.undone) s.undone = 0;               // undo qilingan juftlik o'chdi
     }
     // Undo'dan keyin ham tozalaymiz: tiklangan "sh" qayta almashmasin
     // (yana "h" -> "shh"), ikkinchi Backspace esa oddiy o'chiradi.
     ResetPair(s);
     return a;
+}
+
+// Tekshiruv kaliti: kichik harf (so'zda faqat lotin harflari), apostrof -> '.
+// Boshi/oxiridagi apostroflar so'zga kirmaydi: 'shop' (qo'shtirnoq), teachers'.
+// key[*b..*e) — kalit; *e > *b bo'lmasa bo'sh.
+static void BuildKey(const AutoState& s, wchar_t* key, int* b, int* e)
+{
+    for (int i = 0; i < s.origLen; ++i) {
+        wchar_t c = s.orig[i];
+        if (c >= L'A' && c <= L'Z') c = (wchar_t)(c + 32);
+        else if (Auto_IsApostrophe(c)) c = L'\'';
+        key[i] = c;
+    }
+    *b = 0; *e = s.origLen;
+    while (*b < *e && key[*b] == L'\'')     ++*b;
+    while (*e > *b && key[*e - 1] == L'\'') --*e;
+}
+
+int Auto_LearnKey(const AutoState& s, wchar_t* key, wchar_t* disp)
+{
+    if (s.undone <= 0 || s.lost || s.origLen <= 0) return 0;
+    wchar_t k[AUTO_WORD_MAX];
+    int b, e;
+    BuildKey(s, k, &b, &e);
+    for (int i = b; i < e; ++i) { key[i - b] = k[i]; disp[i - b] = s.orig[i]; }
+    return e > b ? e - b : 0;
 }
 
 bool Auto_OnWordEnd(AutoState& s, AutoSkipFn skip, void* ctx, wchar_t* text, int* len, int* bs)
@@ -122,18 +151,9 @@ bool Auto_OnWordEnd(AutoState& s, AutoSkipFn skip, void* ctx, wchar_t* text, int
         int replaced = 0;
         for (int i = 0; i < s.scrLen; ++i) if (s.span[i] == 2) replaced++;
         if (replaced) {
-            // Tekshiruv kaliti: kichik harf (so'zda faqat lotin harflari), apostrof -> '
             wchar_t key[AUTO_WORD_MAX];
-            for (int i = 0; i < s.origLen; ++i) {
-                wchar_t c = s.orig[i];
-                if (c >= L'A' && c <= L'Z') c = (wchar_t)(c + 32);
-                else if (Auto_IsApostrophe(c)) c = L'\'';
-                key[i] = c;
-            }
-            // Boshi/oxiridagi apostroflar so'zga kirmaydi: 'shop' (qo'shtirnoq), teachers'
-            int b = 0, e = s.origLen;
-            while (b < e && key[b] == L'\'')     b++;
-            while (e > b && key[e - 1] == L'\'') e--;
+            int b, e;
+            BuildKey(s, key, &b, &e);
             if (e > b && skip(key + b, e - b, ctx)) {
                 for (int i = 0; i < s.origLen; ++i) text[i] = s.orig[i];
                 *len   = s.origLen;
@@ -144,4 +164,43 @@ bool Auto_OnWordEnd(AutoState& s, AutoSkipFn skip, void* ctx, wchar_t* text, int
     }
     Auto_Reset(s);
     return revert;
+}
+
+// Kalit uchun slot: bor bo'lsa o'sha, aks holda bo'sh yoki eng eski (LRU) —
+// u tozalanib shu kalitga beriladi. Har holda tick yangilanadi (jadval
+// nol bilan boshlanadi; clock 2^32 ga yetmaydi — sessiyada shuncha nomzod bo'lmaydi).
+static LearnSlot& LearnFind(LearnTable& t, const wchar_t* key, int len)
+{
+    if (len > AUTO_WORD_MAX) len = AUTO_WORD_MAX;
+    LearnSlot* old = &t.s[0];
+    for (int i = 0; i < LEARN_SLOTS; ++i) {
+        LearnSlot& x = t.s[i];
+        if (x.len == len) {
+            int j = 0;
+            while (j < len && x.key[j] == key[j]) ++j;
+            if (j == len) { x.tick = ++t.clock; return x; }
+        }
+        if (x.tick < old->tick) old = &x;      // bo'sh slotda tick = 0 — birinchi navbatda
+    }
+    for (int j = 0; j < len; ++j) old->key[j] = key[j];
+    old->len      = (unsigned char)len;
+    old->count    = 0;
+    old->done     = false;
+    old->tick     = ++t.clock;
+    return *old;
+}
+
+bool Learn_Hit(LearnTable& t, const wchar_t* key, int len)
+{
+    if (len <= 0) return false;
+    LearnSlot& x = LearnFind(t, key, len);
+    if (x.count < 255) x.count++;
+    if (x.count < 2 || x.done) return false;
+    x.done = true;
+    return true;
+}
+
+void Learn_Decline(LearnTable& t, const wchar_t* key, int len)
+{
+    if (len > 0) LearnFind(t, key, len).done = true;
 }

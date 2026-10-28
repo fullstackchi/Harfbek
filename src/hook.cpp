@@ -307,6 +307,10 @@ static AutoState g_auto       = {};     // oxirgi belgi va undo ma'lumoti
 static HWND      g_autoFg     = NULL;   // oxirgi foreground oyna (almashsa holat tozalanadi)
 static DWORD     g_autoFgTid  = 0;      // uning thread'i (klaviatura layout'i shu thread'niki)
 static bool      g_autoFgTerm = false;  // u terminal yoki istisno ilovami (har tugmada tekshirmaymiz)
+static bool      g_autoFgApp  = false;  // u "ilova" (shell/taskbar va Harfbek oynasi emas)
+// Oxirgi yozilgan ilova oynasi (flyout ilova qatori uchun) — hook yozadi, main
+// thread o'qiydi; ko'rsatkich o'lchamidagi tekislangan qiymat atomik.
+static HWND volatile g_lastTyping = NULL;
 // Joriy so'z boshidagi fokus va caret (so'zni qaytarishdan oldin solishtiriladi)
 static HWND      g_wordFocus  = NULL;   // NULL — olinmagan (qaytarilmaydi)
 static HWND      g_wordCaretW = NULL;   // caret egasi (NULL — caret yo'q, tekshirilmaydi)
@@ -338,6 +342,33 @@ static bool IsExcludedWindow(HWND w)
     return Settings_IsExcluded(name);
 }
 
+// Foydalanuvchi ilovasimi: Harfbek jarayoni, shell (taskbar, tray overflow) va
+// UWP xostlari emas. CoreWindow — Start/qidiruv (SearchHost, StartMenuExperienceHost);
+// ApplicationFrameWindow — barcha "framed" UWP ilovalarining umumiy xosti
+// (ApplicationFrameHost.exe): uni istisnoga qo'shish hamma UWP ilovada avto
+// rejimni o'chirardi (R-14). Bunday oynada flyout oldingi ilovani ko'rsatadi.
+// Faqat foreground almashganda chaqiriladi; GetClassNameW xabar yubormaydi.
+static bool IsAppWindow(HWND w)
+{
+    DWORD pid = 0;
+    GetWindowThreadProcessId(w, &pid);
+    if (pid == GetCurrentProcessId()) return false;
+    static const wchar_t* const kShell[] = {
+        L"Shell_TrayWnd", L"Shell_SecondaryTrayWnd", L"NotifyIconOverflowWindow",
+        L"Windows.UI.Core.CoreWindow", L"ApplicationFrameWindow",
+    };
+    wchar_t cls[64];
+    if (!GetClassNameW(w, cls, 64)) return false;
+    for (int i = 0; i < (int)(sizeof(kShell) / sizeof(kShell[0])); ++i)
+        if (lstrcmpiW(cls, kShell[i]) == 0) return false;
+    return true;
+}
+
+HWND Hook_GetLastTypingWindow()
+{
+    return g_lastTyping;
+}
+
 static void AutoResetAll()
 {
     Auto_Reset(g_auto);
@@ -364,6 +395,56 @@ static bool IsNavKey(UINT vk)
 static bool AutoSkipCheck(const wchar_t* w, int len, void*)
 {
     return (g_settings.skipEnglish && AutoSkip_IsForeign(w, len)) || Settings_IsSkipWord(w, len);
+}
+
+// So'z o'rganish: jadval (autoconv, belgilangan o'lcham) va main thread'ga
+// uzatiladigan so'z — bitta SRWLOCK ostida (hook va main thread; qisqa, heap yo'q).
+static SRWLOCK    g_learnLock = SRWLOCK_INIT;
+static LearnTable g_learn     = {};
+static wchar_t    g_learnWord[AUTO_WORD_MAX + 1];   // so'raladigan so'z (registr bilan); "" — yo'q
+
+// Undo qilingan so'z tugadi. Foydalanuvchi ro'yxatida bo'lsa yoki ichki ro'yxat
+// (yoqiq bo'lsa) uni allaqachon qaytaradigan bo'lsa — so'ralmaydi. Ichki ro'yxat
+// o'chiq bo'lsa inglizcha so'z ham taklif qilinadi: foydalanuvchi aynan shu
+// so'zni qo'lda tuzatyapti.
+static void LearnCandidate(const wchar_t* key, const wchar_t* disp, int len)
+{
+    if (!g_settings.learnWords || Settings_IsSkipWord(key, len) ||
+        (g_settings.skipEnglish && AutoSkip_IsForeign(key, len)))
+        return;
+    AcquireSRWLockExclusive(&g_learnLock);
+    bool ask = Learn_Hit(g_learn, key, len);
+    if (ask) {
+        for (int i = 0; i < len; ++i) g_learnWord[i] = disp[i];
+        g_learnWord[len] = 0;
+    }
+    ReleaseSRWLockExclusive(&g_learnLock);
+    if (ask && g_hWnd) PostMessageW(g_hWnd, WM_APP_LEARN, 0, 0);
+}
+
+bool Hook_TakeLearnWord(wchar_t* out, int n)
+{
+    AcquireSRWLockExclusive(&g_learnLock);
+    bool ok = g_learnWord[0] != 0;
+    if (ok) lstrcpynW(out, g_learnWord, n);
+    g_learnWord[0] = 0;
+    ReleaseSRWLockExclusive(&g_learnLock);
+    return ok;
+}
+
+void Hook_LearnDecline(const wchar_t* word)
+{
+    wchar_t key[AUTO_WORD_MAX];
+    int     len = 0;
+    for (; word[len] && len < AUTO_WORD_MAX; ++len) {
+        wchar_t c = word[len];
+        if (c >= L'A' && c <= L'Z') c = (wchar_t)(c + 32);
+        else if (Auto_IsApostrophe(c)) c = L'\'';
+        key[len] = c;
+    }
+    AcquireSRWLockExclusive(&g_learnLock);
+    Learn_Decline(g_learn, key, len);
+    ReleaseSRWLockExclusive(&g_learnLock);
 }
 
 // So'zni qaytarish ekrandagi so'z kursor oldida turibdi deb faraz qiladi (bs ta
@@ -459,7 +540,9 @@ static bool AutoKeyDown(const KBDLLHOOKSTRUCT* k)
         g_autoFg     = fg;
         g_autoFgTid  = fg ? GetWindowThreadProcessId(fg, NULL) : 0;
         g_autoFgTerm = fg && (Hook_IsTerminalWindow(fg) || IsExcludedWindow(fg));
+        g_autoFgApp  = fg && IsAppWindow(fg);
     }
+    if (g_autoFgApp) g_lastTyping = fg;       // istisno/terminal ham — flyout ularni ko'rsatadi
     if (!fg || g_autoFgTerm) return false;   // terminal va istisno ilovalarda avto rejim ishlamaydi
 
     if (vk == VK_BACK) {
@@ -491,8 +574,10 @@ static bool AutoKeyDown(const KBDLLHOOKSTRUCT* k)
     }
 
     if (term) {
-        wchar_t text[AUTO_WORD_MAX];
+        wchar_t text[AUTO_WORD_MAX], key[AUTO_WORD_MAX];
         int     len = 0, bs = 0;
+        int     kl  = Auto_LearnKey(g_auto, key, text);   // text — vaqtincha ko'rinish
+        if (kl) LearnCandidate(key, text, kl);
         if (!Auto_OnWordEnd(g_auto, AutoSkipCheck, NULL, text, &len, &bs)) return false;
         if (!WordFocusSame()) return false;     // fokus/caret siljigan — boshqa matnga tegmaymiz
         AutoSend(bs, text, len, k);             // şop + ' ' -> shop + ' '

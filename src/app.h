@@ -22,6 +22,8 @@
 #define TRAY_RETRY_TIMER     0x400
 // Ctrl+o'ng-tugma bosilganda o'girish menyusini ko'rsatish (wp=x, lp=y)
 #define WM_APP_CONVERTMENU  (WM_APP + 4)
+// Hook so'z o'rganish nomzodini tayyorladi (Hook_TakeLearnWord bilan olinadi)
+#define WM_APP_LEARN        (WM_APP + 5)
 
 // Menyu buyruq ID lari
 enum {
@@ -41,6 +43,7 @@ enum {
     CMD_CONV_TODIGRAPH = 300,   // ö ğ ş ç -> o' g' sh ch
     CMD_CONV_TOSPECIAL,         // o' g' sh ch -> ö ğ ş ç
     CMD_CONV_CYR2LAT,           // kirill -> lotin
+    CMD_CONV_LAT2CYR,           // lotin (yangi va eski) -> kirill
 };
 
 // Umumiy global holat (main.cpp da aniqlanadi)
@@ -58,6 +61,14 @@ void Hook_ResetTriggerState();      // trigger o'zgarganda kuzatuv holatini toza
 // Terminalda Ctrl+o'ng-tugma, o'girish hotkey'i va avto rejim ishlamaydi.
 // Xabar yubormaydi — istalgan thread'dan chaqirish mumkin.
 bool Hook_IsTerminalWindow(HWND w);
+// Avto rejimda oxirgi yozilgan ilova oynasi (top-level; shell/taskbar va
+// Harfbek oynalari emas). NULL — hali yo'q. Istalgan thread'dan.
+HWND Hook_GetLastTypingWindow();
+// So'z o'rganish (WM_APP_LEARN dan keyin, main thread): nomzod so'zni oladi
+// (yozilganidek, registr bilan; out kamida 33 belgi). false — nomzod yo'q.
+bool Hook_TakeLearnWord(wchar_t* out, int n);
+// Foydalanuvchi "Kerak emas" dedi (yoki vaqt tugadi): shu sessiyada qayta so'ralmaydi.
+void Hook_LearnDecline(const wchar_t* word);
 
 // Trigger tugmaning qisqa keycap nomi, masalan "AltGr" (ui_settings.cpp da aniqlanadi;
 // qo'llanma va tray tooltip uchun)
@@ -68,6 +79,7 @@ enum ConvDir {
     CONV_TO_DIGRAPH,    // ö ğ ş ç -> o' g' sh ch
     CONV_TO_SPECIAL,    // o' g' sh ch -> ö ğ ş ç
     CONV_CYR_TO_LAT,    // kirill -> lotin (yangi alifbo)
+    CONV_LAT_TO_CYR,    // lotin (ö ğ ş ç va o' g' sh ch) -> kirill
 };
 void TextConvert_Run(int dir);   // dir — ConvDir
 
@@ -83,6 +95,13 @@ void ShowLicense(HWND parent);          // litsenziya / ogohlantirish
 // SP_PLAYGROUND — sinov maydoni (task 28; enum oxirida, sidebar'da "Rejim" dan keyin)
 enum SettingsPage { SP_GENERAL, SP_MODE, SP_HOTKEYS, SP_EXCLUDE, SP_ABOUT, SP_PLAYGROUND };
 void ShowSettingsPage(HWND parent, int page);
+// Sozlamalar oynasi ochiqmi (ui_settings.cpp). Ochiq bo'lsa uning lokal
+// ro'yxatlari yopilganda ustidan yozadi — flyout toggle'i va so'z o'rganish kutadi.
+bool SettingsUi_IsOpen();
+
+// Tray ikonkasini joriy holatga moslaydi (main.cpp): trigger + yoqiq — asl,
+// avto — "A" badge, o'chiq — kulrang va xira. Faqat main thread'dan.
+void Tray_UpdateIcon();
 
 // Rejim / yoqish almashuvi (main.cpp): saqlash, hook holati, tooltip, OSD,
 // ochiq flyout. Tray menyu, tezkor tugma va flyout shu ikkisidan o'tadi.
@@ -96,3 +115,8 @@ void Flyout_Refresh();   // holat tashqaridan (hotkey) o'zgardi — ochiq bo'lsa
 // Ekrandagi qisqa bildirishnoma (ui_osd.cpp): fokus olmaydi, ~1.5 s dan keyin
 // yo'qoladi; qayta chaqiruv matnni yangilaydi. Faqat main thread'dan.
 void Osd_Show(const wchar_t* text);
+// Ikki tugmali so'rov popup'i (ui_osd.cpp): fokus olmaydi, ~8 s yoki tugma
+// bosilganda yopiladi; vaqt tugasa cb(false). Yangisi oldingisini almashtiradi
+// (oldingisiga cb(false)). Faqat main thread'dan.
+typedef void (*OsdAskFn)(bool accepted, void* ctx);
+void Osd_Ask(const wchar_t* text, const wchar_t* yes, const wchar_t* no, OsdAskFn cb, void* ctx);

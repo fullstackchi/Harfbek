@@ -65,6 +65,10 @@ enum StrId {
     S_CONV_CYR2LAT, S_SET_SKIP_EN, S_SET_SKIP_EN_HINT, S_SET_SKIP_WORDS,
     S_SET_SKIP_WORDS_HINT, S_EX_ADD_DEV,
 
+    // lotin -> kirill, flyout ilova qatori, istisno so'zlarni o'rganish
+    S_CONV_LAT2CYR, S_FLY_APP_ON, S_FLY_APP_OFF, S_FLY_APP_TERM,
+    S_LEARN_ASK, S_LEARN_NO, S_SET_LEARN, S_SET_LEARN_HINT,
+
     S_STR_COUNT
 };
 

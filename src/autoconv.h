@@ -38,6 +38,8 @@ struct AutoState {
     int           origLen;
     int           scrLen;                // ekrandagi so'z belgilari soni
     bool          lost;                  // so'z kuzatuvi uzildi (uzun so'z, so'z boshidan oldinga Backspace)
+    int           undone;                // >0 — undo qilingan juftlik ekranda [undone-2, undone) da
+                                         // (o'rganish nomzodi); Backspace uni o'chirsa — 0
 };
 
 // So'z istisnomi: w — kichik harfli, apostroflar ' ga keltirilgan asl so'z
@@ -64,3 +66,26 @@ AutoAction Auto_OnBackspace(AutoState& s);
 // o'chirilsin, text[0..*len) (asl belgilar, text kamida AUTO_WORD_MAX) yozilsin.
 // Har holda so'z va juftlik holati tozalanadi.
 bool Auto_OnWordEnd(AutoState& s, AutoSkipFn skip, void* ctx, wchar_t* text, int* len, int* bs);
+
+// So'z o'rganish nomzodi: so'zda undo bo'lgan va kuzatuv uzilmagan bo'lsa —
+// kalit (Auto_OnWordEnd dagidek: kichik harf, apostrof ', chetdagi apostroflarsiz)
+// va ko'rinishi (asl registr bilan, xuddi shu qism), ikkalasi AUTO_WORD_MAX
+// sig'imli. Qaytaradi — uzunlik (0 — nomzod emas). Auto_OnWordEnd dan OLDIN chaqiriladi.
+int Auto_LearnKey(const AutoState& s, wchar_t* key, wchar_t* disp);
+
+// O'rganish jadvali: belgilangan o'lcham, LRU (heap'siz). Thread-xavfsiz emas —
+// chaqiruvchi qulflaydi.
+#define LEARN_SLOTS 16
+struct LearnSlot {
+    wchar_t       key[AUTO_WORD_MAX];
+    unsigned char len;        // 0 — bo'sh
+    unsigned char count;      // necha marta nomzod bo'ldi
+    bool          done;       // so'raldi yoki "Kerak emas" — qayta so'ralmaydi
+    unsigned      tick;       // oxirgi ishlatilgan (LRU)
+};
+struct LearnTable { LearnSlot s[LEARN_SLOTS]; unsigned clock; };
+// Nomzod hisoblagichi +1; true — 2 ga yetdi va hali so'ralmagan: so'rash kerak
+// (slot "so'raldi" deb belgilanadi — sessiyada bir marta)
+bool Learn_Hit(LearnTable& t, const wchar_t* key, int len);
+// So'z rad etildi — jadvalda belgilanadi (yo'q bo'lsa qo'shiladi)
+void Learn_Decline(LearnTable& t, const wchar_t* key, int len);

@@ -28,6 +28,7 @@ struct Settings {
     bool notify;        // rejim/yoqish o'zgarganda ekranda bildirishnoma
     UINT autoRules;     // avto rejim qoidalari (AUTO_RULE_* bitlari)
     bool skipEnglish;   // avto rejim: inglizcha so'zlar (ichki ro'yxat/evristika) asliga qaytsin
+    bool learnWords;    // avto rejim: undo qilingan so'zni istisnoga qo'shishni taklif qilish
 };
 
 // Avto rejim qoidalari (Settings::autoRules bitlari)

@@ -2,6 +2,11 @@
 // Gdiplus headerlari va gdiplus.lib kerak emas, oyna yopiq paytda DLL
 // xotirada turmaydi (Ui_Begin/Ui_End refcount).
 #include "app.h"
+#include <math.h>   // sqrtf (intrinsic)
+
+// UI kodi (chizish, ikonka) tezlikka sezgir emas — hajm uchun optimallashtiriladi
+// (exe budjeti). Hook thread'i kodi (hook.cpp, autoconv.cpp) /O2 da qoladi.
+#pragma optimize("s", on)
 
 // =====================================================================
 //  GDI+ flat API (o'z typedef'larimiz)
@@ -733,4 +738,109 @@ void Ui_DrawInputFrame(HDC hdc, const RECT& rc, bool focused, float hover)
         RECT b = { rc.left + rad / 2, rc.bottom - w, rc.right - rad / 2, rc.bottom };
         Ui_FillRound(hdc, b, w / 2, t.accent);
     }
+}
+
+// =====================================================================
+//  Tray holat ikonkasi (GDI+ siz). Doira qamrovi analitik (r + 0.5 - masofa);
+//  "A" 4 marta katta o'lchamda AA'siz chizilib HALFTONE bilan kichraytiriladi
+//  (kichik shriftda GDI AA o'chib qolishiga bog'liq emas). Ikonka bitmap'lari —
+//  oddiy (premultiply qilinmagan) alpha; ikonkamiz 32-bit (alpha bilan).
+// =====================================================================
+static float Cover(float d, float r)
+{
+    float c = r + 0.5f - d;
+    return c < 0 ? 0 : (c > 1 ? 1 : c);
+}
+
+// n×n 32-bit DIB (yuqoridan pastga); bi — GetDIBits uchun ham
+static HBITMAP Dib32(HDC dc, int n, BITMAPINFO& bi, BYTE** bits)
+{
+    ZeroMemory(&bi, sizeof(bi));
+    bi.bmiHeader.biSize     = sizeof(bi.bmiHeader);
+    bi.bmiHeader.biWidth    = n;
+    bi.bmiHeader.biHeight   = -n;
+    bi.bmiHeader.biPlanes   = 1;
+    bi.bmiHeader.biBitCount = 32;
+    return CreateDIBSection(dc, &bi, DIB_RGB_COLORS, (void**)bits, NULL, 0);
+}
+
+HICON Ui_MakeStateIcon(HICON base, bool badge, bool gray)
+{
+    ICONINFO ii;
+    if (!base || !GetIconInfo(base, &ii)) return NULL;
+    BITMAP bm = {};
+    GetObjectW(ii.hbmMask, sizeof(bm), &bm);
+    int        n   = bm.bmWidth;
+    HICON      out = NULL;
+    HDC        dc  = CreateCompatibleDC(NULL);
+    HDC        dc2 = CreateCompatibleDC(NULL);
+    BITMAPINFO bi, gbi;
+    BYTE      *px = NULL, *big = NULL, *gl = NULL;
+    HBITMAP color = (n >= 8 && n <= 256 && ii.hbmColor) ? Dib32(dc, n, bi, &px) : NULL;
+    HBITMAP gb = NULL, gs = NULL;
+    float   r  = n * 0.27f;                          // badge radiusi (16 px -> ~4.3)
+    float   cx = n - r - n * 0.02f;                  // markaz (cx, cx) — o'ng pastda
+    if (color && GetDIBits(dc, ii.hbmColor, 0, n, px, &bi, DIB_RGB_COLORS) == n) {
+        if (badge && (gb = Dib32(dc, n * 4, gbi, &big)) != NULL &&
+                     (gs = Dib32(dc, n, gbi, &gl)) != NULL) {
+            HGDIOBJ ob = SelectObject(dc, gb);       // DIB nol bilan boshlanadi (qora)
+            // Bosh harf balandligi ~ 0.7 em; harf doira diametrining ~57% i
+            HFONT f = CreateFontW(-(int)(r * 1.64f * 4), 0, 0, 0, FW_BOLD, 0, 0, 0,
+                                  DEFAULT_CHARSET, 0, 0, NONANTIALIASED_QUALITY, 0, L"Segoe UI");
+            HGDIOBJ of = SelectObject(dc, f);
+            SetBkMode(dc, TRANSPARENT);
+            SetTextColor(dc, RGB(255, 255, 255));
+            SetTextAlign(dc, TA_CENTER | TA_BASELINE);
+            TEXTMETRICW tm; GetTextMetricsW(dc, &tm);
+            TextOutW(dc, (int)(cx * 4), (int)(cx * 4) + (tm.tmHeight - tm.tmInternalLeading) * 7 / 20, L"A", 1);
+            HGDIOBJ os = SelectObject(dc2, gs);
+            SetStretchBltMode(dc2, HALFTONE);
+            SetBrushOrgEx(dc2, 0, 0, NULL);
+            StretchBlt(dc2, 0, 0, n, n, dc, 0, 0, n * 4, n * 4, SRCCOPY);
+            GdiFlush();
+            SelectObject(dc2, os);
+            SelectObject(dc, of); DeleteObject(f);
+            SelectObject(dc, ob);
+        }
+        for (int i = 0; i < n * n; ++i) {
+            BYTE* p = px + i * 4;
+            float b = p[0], g = p[1], rr = p[2], a = p[3] / 255.0f;
+            if (badge) {
+                float dx = i % n + 0.5f - cx, dy = i / n + 0.5f - cx;
+                float d  = sqrtf(dx * dx + dy * dy);
+                a *= 1 - Cover(d, r + 1);            // 1 px cut-out (fon ko'rinadi)
+                float c = Cover(d, r);
+                if (c > 0) {
+                    // Badge: indigo (99,102,241) -> oq harf qamroviga ko'ra
+                    float l  = gl ? gl[i * 4 + 2] / 255.0f : 0;
+                    float oa = c + a * (1 - c), k = a * (1 - c);
+                    b  = ((241 + 14 * l)  * c + b  * k) / oa;
+                    g  = ((102 + 153 * l) * c + g  * k) / oa;
+                    rr = ((99 + 156 * l)  * c + rr * k) / oa;
+                    a  = oa;
+                }
+            }
+            if (gray) {
+                b = g = rr = 0.299f * rr + 0.587f * g + 0.114f * b;
+                a *= 0.6f;
+            }
+            p[0] = (BYTE)(b + 0.5f); p[1] = (BYTE)(g + 0.5f); p[2] = (BYTE)(rr + 0.5f);
+            p[3] = (BYTE)(a * 255 + 0.5f);
+        }
+        HBITMAP mask = CreateBitmap(n, n, 1, 1, NULL);
+        HGDIOBJ om = SelectObject(dc, mask);
+        PatBlt(dc, 0, 0, n, n, BLACKNESS);           // shaffoflikni alpha hal qiladi
+        SelectObject(dc, om);
+        ICONINFO ni = { TRUE, 0, 0, mask, color };
+        out = CreateIconIndirect(&ni);
+        DeleteObject(mask);
+    }
+    if (gs)    DeleteObject(gs);
+    if (gb)    DeleteObject(gb);
+    if (color) DeleteObject(color);
+    DeleteDC(dc2);
+    DeleteDC(dc);
+    if (ii.hbmColor) DeleteObject(ii.hbmColor);
+    DeleteObject(ii.hbmMask);
+    return out;
 }

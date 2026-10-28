@@ -294,7 +294,22 @@ static const wchar_t* STR[S_STR_COUNT][LANG_COUNT] = {
     /*S_EX_ADD_DEV*/      { L"Dasturlaş muhitlarini qöşiş",
                             L"Добавить среды разработки",
                             L"Add code editors" },
-};
+
+    // --- lotin -> kirill, flyout ilova qatori, istisno so'zlarni o'rganish ---
+    /*S_CONV_LAT2CYR*/    { L"Lotin  →  Кирилл",
+                            L"Латиница  →  кириллица",
+                            L"Latin  →  Cyrillic" },
+    /*S_FLY_APP_ON*/      { L"Avto rejim işlayapti", L"Автозамена работает", L"Auto mode is on" },
+    /*S_FLY_APP_OFF*/     { L"Bu dasturda öçirilgan", L"Отключено в этой программе", L"Off in this app" },
+    /*S_FLY_APP_TERM*/    { L"Terminal — doim öçiq", L"Терминал — всегда выкл.", L"Terminal — always off" },
+    /*S_LEARN_ASK*/       { L"«%s» sözini istisnoga qöşaymi?",
+                            L"Добавить «%s» в исключения?",
+                            L"Add “%s” to exception words?" },
+    /*S_LEARN_NO*/        { L"Kerak emas", L"Не надо", L"No thanks" },
+    /*S_SET_LEARN*/       { L"Istisno sözlarni taklif qiliş", L"Предлагать слова-исключения", L"Suggest exception words" },
+    /*S_SET_LEARN_HINT*/  { L"Bir sözdagi almaştiriş ⌫ bilan ikki marta qaytarsangiz, uni istisnoga qöşişni taklif qiladi",
+                            L"Если дважды отменить замену в одном слове клавишей ⌫, предложим добавить его в исключения",
+                            L"If you undo a replacement in the same word twice with ⌫, we offer to add it to exceptions" },};
 
 const wchar_t* T(StrId id)
 {

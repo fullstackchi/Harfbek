@@ -3,13 +3,17 @@
 #include <shlobj.h>   // SHGetFolderPathW, IShellLinkW (yorliq yaratish)
 #include <commctrl.h> // HOTKEYF_* (faqat makrolar)
 
+// Hajm uchun (exe budjeti). Hook thread'i chaqiradigan qidiruvlar (IsExcluded,
+// IsSkipWord) so'z/oyna almashganda bir marta — /Os ham yetarli tez.
+#pragma optimize("s", on)
+
 // Standart tezkor tugmalar: Ctrl+Shift+F9 / F10 / F11 (Ctrl+Alt = AltGr — ishlatilmaydi)
 #define HK_CTRL_SHIFT(vk)  MAKEWORD(vk, HOTKEYF_CONTROL | HOTKEYF_SHIFT)
 
 // Standart qiymatlar (apo = rasmiy tutuq belgisi ʻ U+02BB)
 Settings g_settings = { LANG_UZ, TRIGGER_VK, true, false, true, (wchar_t)0x02BB, MODE_TRIGGER,
                         HK_CTRL_SHIFT(VK_F9), HK_CTRL_SHIFT(VK_F10), HK_CTRL_SHIFT(VK_F11),
-                        true, AUTO_RULE_ALL, true };
+                        true, AUTO_RULE_ALL, true, true };
 
 // Istisno ilovalar ro'yxati: main thread yozadi, hook thread'i o'qiydi
 static const int kExcludeMax = 1024;          // 1023 belgi + 0
@@ -95,6 +99,7 @@ void Settings_Load()
     }
 
     g_settings.skipEnglish = GetPrivateProfileIntW(L"general", L"SkipEnglish", 1, ini) != 0;
+    g_settings.learnWords  = GetPrivateProfileIntW(L"general", L"LearnWords",  1, ini) != 0;
     GetPrivateProfileStringW(L"general", L"SkipWords", L"", ex, kExcludeMax, ini);
     Settings_SetSkipWords(ex);
 
@@ -143,6 +148,7 @@ void Settings_Save()
     WritePrivateProfileStringW(L"general", L"DefaultExcludes", L"1", ini);
 
     WritePrivateProfileStringW(L"general", L"SkipEnglish", g_settings.skipEnglish ? L"1" : L"0", ini);
+    WritePrivateProfileStringW(L"general", L"LearnWords",  g_settings.learnWords  ? L"1" : L"0", ini);
     Settings_GetSkipWords(ex, kExcludeMax);
     WritePrivateProfileStringW(L"general", L"SkipWords", ex, ini);
 }

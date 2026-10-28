@@ -11,6 +11,8 @@
 #include <shellapi.h>
 #include <commctrl.h>   // InitCommonControlsEx
 
+#pragma optimize("s", on)   // tray/menyu — hajm uchun (exe budjeti; ui_gfx.cpp ga qarang)
+
 HINSTANCE g_hInst = NULL;
 HWND      g_hWnd  = NULL;
 
@@ -47,12 +49,70 @@ static void FormatTrayTip()
     lstrcpynW(g_nid.szTip, buf, 128);
 }
 
+// Holat ikonkasi (Ui_MakeStateIcon): avto — "A" badge, o'chiq — kulrang.
+// Faqat holat o'zgarganda yasaladi; trigger + yoqiq — asl g_iconSmall.
+static HICON g_iconState = NULL;
+static int   g_iconKey   = -1;   // bit 0 — avto, bit 1 — yoqiq (-1 — yasalmagan)
+
+// g_nid.hIcon ni joriy holatga moslaydi. Qaytaradi — eski yasalgan ikonka:
+// tray yangisini olgandan KEYIN DestroyIcon qilinadi (yoki NULL).
+static HICON PrepareStateIcon()
+{
+    bool autoMode = g_settings.mode == MODE_AUTO;
+    int  key = (autoMode ? 1 : 0) | (g_settings.enabled ? 2 : 0);
+    if (key == g_iconKey) return NULL;
+    HICON ic  = (key == 2) ? NULL : Ui_MakeStateIcon(g_iconSmall, autoMode, !g_settings.enabled);
+    HICON old = g_iconState;
+    g_iconState = ic;
+    g_iconKey   = (ic || key == 2) ? key : -1;   // yasalmasa keyingi safar yana urinamiz
+    g_nid.hIcon = ic ? ic : g_iconSmall;
+    return old;
+}
+
+void Tray_UpdateIcon()
+{
+    HICON old = PrepareStateIcon();
+    g_nid.uFlags = NIF_ICON;
+    Shell_NotifyIconW(NIM_MODIFY, &g_nid);
+    if (old) DestroyIcon(old);
+}
+
+// Istisno so'zlarga qo'shib saqlaydi (words — ';' bilan; kichik harfga va
+// takrorsizlikka Settings_SetSkipWords keltiradi).
+static void AddSkipWords(const wchar_t* words)
+{
+    wchar_t list[1024 + 4 * 40];
+    Settings_GetSkipWords(list, 1024);
+    if (list[0]) lstrcatW(list, L";");
+    lstrcatW(list, words);
+    Settings_SetSkipWords(list);
+    Settings_Save();
+}
+
+// Popup'da "Qöşiş" bosilgan, lekin o'sha payt Sozlamalar ochiq edi: uning lokal
+// ro'yxati saqlanganda ustidan yozardi (R-13). So'zlar shu yerda kutadi va
+// Sozlamalar yopilgach (saqlansa ham, bekor qilinsa ham) qo'shiladi. Heap'siz,
+// ~4 so'z; sig'masa ortiqchasi tashlanadi.
+static wchar_t g_learnPend[4 * 40];
+
+static void FlushLearnPending()
+{
+    if (!g_learnPend[0] || SettingsUi_IsOpen()) return;
+    AddSkipWords(g_learnPend);
+    g_learnPend[0] = 0;
+}
+
 // Tray yozuvini (tooltip) joriy tilda va joriy trigger bilan yangilaydi
+// (ikonka ham — u chaqiriladigan joylarda holat o'zgargan bo'lishi mumkin).
+// Sozlamalar yopilgandan keyin ham chaqiriladi — kutayotgan so'zlar shu yerda.
 static void UpdateTrayTip()
 {
+    FlushLearnPending();
     FormatTrayTip();
-    g_nid.uFlags = NIF_TIP;
+    HICON old = PrepareStateIcon();
+    g_nid.uFlags = NIF_TIP | NIF_ICON;
     Shell_NotifyIconW(NIM_MODIFY, &g_nid);
+    if (old) DestroyIcon(old);
 }
 
 // Tray ikonkani qo'shadi. Ikonka allaqachon bo'lsa (masalan, DPI o'zgarganda
@@ -171,7 +231,7 @@ static void OnThemeChanged()
     EnumThreadWindows(GetCurrentThreadId(), ThemeChangedProc, 0);
 }
 
-// Belgilangan matnni o'girish menyusi (ikki yo'nalish) — Ctrl+o'ng-tugma va
+// Belgilangan matnni o'girish menyusi (4 yo'nalish) — Ctrl+o'ng-tugma va
 // tezkor tugma uchun umumiy. Modal oynamiz yoki boshqa menyumiz ochiq bo'lsa
 // ochmaymiz. Terminalda ham — u yerda bizning Ctrl+C SIGINT bo'lib jarayonni
 // to'xtatadi (Ctrl+o'ng-tugma yo'lini hook o'zi filtrlaydi, hotkey yo'li esa
@@ -185,6 +245,7 @@ static void ShowConvertMenu(HWND hWnd, int x, int y)
     AppendMenuW(menu, MF_STRING, CMD_CONV_TODIGRAPH, T(S_CONV_TODIGRAPH));
     AppendMenuW(menu, MF_STRING, CMD_CONV_TOSPECIAL, T(S_CONV_TOSPECIAL));
     AppendMenuW(menu, MF_STRING, CMD_CONV_CYR2LAT,   T(S_CONV_CYR2LAT));
+    AppendMenuW(menu, MF_STRING, CMD_CONV_LAT2CYR,   T(S_CONV_LAT2CYR));
     SetForegroundWindow(hWnd);
     g_menuOpen = true;
     int cmd = TrackPopupMenu(menu, TPM_RIGHTBUTTON | TPM_RETURNCMD, x, y, 0, hWnd, NULL);
@@ -193,7 +254,8 @@ static void ShowConvertMenu(HWND hWnd, int x, int y)
     PostMessageW(hWnd, WM_NULL, 0, 0);       // menyu to'g'ri yopilishi uchun
     int dir = cmd == CMD_CONV_TODIGRAPH ? CONV_TO_DIGRAPH :
               cmd == CMD_CONV_TOSPECIAL ? CONV_TO_SPECIAL :
-              cmd == CMD_CONV_CYR2LAT   ? CONV_CYR_TO_LAT : -1;
+              cmd == CMD_CONV_CYR2LAT   ? CONV_CYR_TO_LAT :
+              cmd == CMD_CONV_LAT2CYR   ? CONV_LAT_TO_CYR : -1;
     if (dir >= 0) {
         if (target) SetForegroundWindow(target);   // fokusni matn oynasiga qaytaramiz
         TextConvert_Run(dir);
@@ -217,6 +279,34 @@ static void ShowConvertMenuAtCaret(HWND hWnd)
         if (ClientToScreen(gti.hwndCaret, &c)) pt = c;
     }
     ShowConvertMenu(hWnd, pt.x, pt.y);
+}
+
+// So'z o'rganish so'rovi. Ikki navbatma-navbat bufer: yangi Osd_Ask oldingisini
+// almashtirganda oldingisiga cb(false) chaqiriladi — u o'z so'zini ko'rishi kerak.
+static wchar_t g_askWord[2][40];
+static int     g_askSlot = 0;
+
+static void LearnAnswer(bool accepted, void* ctx)
+{
+    const wchar_t* w = (const wchar_t*)ctx;
+    if (!accepted) { Hook_LearnDecline(w); return; }
+    if (!SettingsUi_IsOpen()) { AddSkipWords(w); return; }
+    int n = lstrlenW(g_learnPend), wl = lstrlenW(w);
+    if (n + wl + 2 > (int)(sizeof(g_learnPend) / sizeof(g_learnPend[0]))) return;
+    if (n) g_learnPend[n++] = L';';
+    lstrcpyW(g_learnPend + n, w);
+}
+
+static void AskLearn()
+{
+    wchar_t* w = g_askWord[g_askSlot];
+    if (!Hook_TakeLearnWord(w, 40)) return;
+    // Sozlamalar ochiq — uning lokal ro'yxati yopilganda ustidan yozadi, so'ramaymiz
+    if (!g_settings.learnWords || SettingsUi_IsOpen()) return;
+    g_askSlot ^= 1;
+    wchar_t text[1024];
+    wsprintfW(text, T(S_LEARN_ASK), w);
+    Osd_Ask(text, T(S_EX_ADD), T(S_LEARN_NO), LearnAnswer, w);
 }
 
 // Menyu buyrug'ini bajaradi
@@ -392,6 +482,10 @@ static LRESULT CALLBACK WndProc(HWND hWnd, UINT msg, WPARAM wp, LPARAM lp)
         ShowConvertMenu(hWnd, (int)(LONG)wp, (int)(LONG)lp);
         return 0;
 
+    case WM_APP_LEARN:
+        AskLearn();
+        return 0;
+
     case WM_HOTKEY:
         // Tezkor tugmalar (hotkeys.cpp). Sozlamalar ochiq paytda ular ro'yxatdan
         // chiqarilgan bo'ladi, shuning uchun bu yerga kelmaydi.
@@ -406,6 +500,7 @@ static LRESULT CALLBACK WndProc(HWND hWnd, UINT msg, WPARAM wp, LPARAM lp)
         Hotkeys_Unregister();
         KillTimer(hWnd, TRAY_RETRY_TIMER);
         Shell_NotifyIconW(NIM_DELETE, &g_nid);
+        if (g_iconState) { DestroyIcon(g_iconState); g_iconState = NULL; }
         PostQuitMessage(0);
         return 0;
     }
@@ -460,6 +555,7 @@ int WINAPI WinMain(HINSTANCE hInst, HINSTANCE, LPSTR, int)
     g_nid.uID              = 1;
     g_nid.uCallbackMessage = WM_TRAYICON;
     g_nid.hIcon            = g_iconSmall;
+    PrepareStateIcon();             // yoqiq/o'chiq va rejimga mos ikonka bilan qo'shiladi
     AddTrayIconOrRetry(g_hWnd);
 
     // Global hook

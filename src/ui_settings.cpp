@@ -115,7 +115,7 @@ enum {
     ID_EDIT, ID_ADD, ID_BROWSE, ID_LIST,
     ID_GITHUB, ID_LINKEDIN, ID_LICENSE,
     ID_PGEDIT, ID_PGCLEAR,                            // sinov maydoni
-    ID_SKIPEN, ID_SKIPEDIT,                           // Rejim: inglizcha so'zlar toggle'i, istisno so'zlar maydoni
+    ID_SKIPEN, ID_LEARN, ID_SKIPEDIT,                 // Rejim: inglizcha so'zlar toggle'i, so'z o'rganish toggle'i, istisno so'zlar maydoni
     ID_ADDDEV,                                        // Istisnolar: dasturlash muhitlarini qo'shish
     ID_COUNT
 };
@@ -151,7 +151,7 @@ enum {
 #define K_FIRST_INTERACTIVE  K_NAV
 
 // K_TEXT uslublari
-enum { TS_TITLE, TS_HEAD, TS_BODY, TS_HINT, TS_SUB };
+enum { TS_TITLE, TS_HEAD, TS_BODY, TS_HINT, TS_SUB, TS_HINTR };   // TS_HINTR — kichik, o'ngga tekislangan bir qator
 
 struct Item {
     int  id, kind;
@@ -193,7 +193,7 @@ struct Win {
     // tahrirlanayotgan qiymatlar (Saqlashgacha g_settings'ga tegmaydi; til — jonli)
     Lang  origLang;
     wchar_t apo;
-    bool  startup, notify, skipEn;
+    bool  startup, notify, skipEn, learn;
     InputMode mode;
     UINT  trig, rules;
     WORD  hk[3];
@@ -629,11 +629,13 @@ static void LayoutGeneral(Win* w)
     Add(w, -1, K_TEXT, X0(w), y, X1(w), y + S(w, 40), T(S_SET_APPEARANCE_HINT), true, TS_HINT);
 }
 
+static int TextH(Win* w, HFONT f, const wchar_t* s, int width);
+
 static void LayoutMode(Win* w)
 {
     int gap = S(w, 16);
     int cardW = (X1(w) - X0(w) - gap) / 2;
-    int top = S(w, TOP_Y), cardH = S(w, 196);
+    int top = S(w, TOP_Y), cardH = S(w, 170);
     bool trigOn = (w->mode == MODE_TRIGGER);
 
     for (int k = 0; k < 2; ++k) {
@@ -641,33 +643,33 @@ static void LayoutMode(Win* w)
         int p = S(w, 18);
         Add(w, k ? ID_CARD_AUTO : ID_CARD_TRIG, K_CARD, l, top, r, top + cardH);
         // qisqa sarlavha (bir qator) + kichik izoh qatori; o'ng yuqoridagi ✓ belgisiga tegmasligi uchun sarlavha torroq
-        Add(w, -1, K_TEXT, l + p, top + S(w, 12), r - S(w, 44), top + S(w, 34),
+        Add(w, -1, K_TEXT, l + p, top + S(w, 10), r - S(w, 44), top + S(w, 31),
             T(k ? S_OSD_MODE_AUTO : S_OSD_MODE_TRIGGER), true, TS_HEAD);
-        Add(w, -1, K_TEXT, l + p, top + S(w, 36), r - p, top + S(w, 56),
+        Add(w, -1, K_TEXT, l + p, top + S(w, 32), r - p, top + S(w, 50),
             k ? L"o' g' sh ch → ö ğ ş ç" : T(S_MODE_TRIGGER), true, TS_SUB);
-        Add(w, -1, K_ILLU, l + p, top + S(w, 56), r - p, top + S(w, 98), NULL, true, k);
+        Add(w, -1, K_ILLU, l + p, top + S(w, 50), r - p, top + S(w, 88), NULL, true, k);
         bool on = (k == 1) == !trigOn;      // shu kartochka tanlanganmi
         if (k == 0) {
-            Add(w, -1, K_TEXT, l + p, top + S(w, 102), r - p, top + S(w, 120),
+            Add(w, -1, K_TEXT, l + p, top + S(w, 89), r - p, top + S(w, 107),
                 Label(w, S_SET_TRIGGER), on, TS_HINT);
             const wchar_t* name = L"";
             for (int i = 0; i < kTrigOptCount; ++i)
                 if (kTrigOpts[i].vk == w->trig) name = T(kTrigOpts[i].name);
-            Add(w, ID_TRIG, K_DROP, l + p, top + S(w, 124), r - p, top + S(w, 124) + S(w, 36),
+            Add(w, ID_TRIG, K_DROP, l + p, top + S(w, 110), r - p, top + S(w, 110) + S(w, 36),
                 name, on);
         } else {
-            Add(w, -1, K_TEXT, l + p, top + S(w, 102), r - p, top + S(w, 120),
+            Add(w, -1, K_TEXT, l + p, top + S(w, 89), r - p, top + S(w, 107),
                 Label(w, S_SET_RULES), on, TS_HINT);
             static const wchar_t* const kRule[4] = { L"o' → ö", L"g' → ğ", L"sh → ş", L"ch → ç" };
             int cell = (cardW - 2 * p) / 2;
             for (int i = 0; i < 4; ++i) {
-                int cx = l + p + (i % 2) * cell, cy = top + S(w, 124) + (i / 2) * S(w, 34);
-                Add(w, ID_RULE_O + i, K_TOGGLE, cx, cy, cx + cell, cy + S(w, 30), kRule[i], on);
+                int cx = l + p + (i % 2) * cell, cy = top + S(w, 109) + (i / 2) * S(w, 29);
+                Add(w, ID_RULE_O + i, K_TOGGLE, cx, cy, cx + cell, cy + S(w, 27), kRule[i], on);
             }
         }
     }
 
-    // pastdagi misol matni
+    // misol matni — sarlavha qatorida, o'ngda (saqlanmagan rejim eslatmasi chiqsa, o'sha joyni egallaydi)
     if (w->mode == MODE_AUTO) {
         lstrcpynW(w->example, T(S_SET_EXAMPLE_AUTO), 256);
     } else {
@@ -675,26 +677,31 @@ static void LayoutMode(Win* w)
         TriggerKeyCap(w->trig, cap, 24);
         wsprintfW(w->example, T(S_SET_EXAMPLE_TRIGGER), cap);
     }
-    int y = top + cardH + S(w, 4);
-    Add(w, -1, K_TEXT, X0(w), y, X1(w), y + S(w, 20), w->example, true, TS_BODY);
-    y += S(w, 24);
-
-    // tanlov hali saqlanmagan: sinov maydoni eski rejimda ishlashini eslatadi (sarlavha qatorida, o'ngda)
     if (w->mode != g_settings.mode) {
+        // tanlov hali saqlanmagan: sinov maydoni eski rejimda ishlashini eslatadi
         int pw = MeasureW(w, w->fSmall, T(S_PG_UNSAVED)) + S(w, 46);
         int maxw = X1(w) - X0(w) - S(w, 120);
         if (pw > maxw) pw = maxw;
         Add(w, -1, K_PILL, X1(w) - pw, S(w, 32), X1(w), S(w, 58), T(S_PG_UNSAVED));
+    } else {
+        Add(w, -1, K_TEXT, X0(w) + S(w, 120), S(w, 32), X1(w), S(w, 58), w->example, true, TS_HINTR);
     }
 
-    // avto rejim bo'limi: inglizcha so'zlar (toggle + izoh) va foydalanuvchining istisno so'zlari.
+    // avto rejim bo'limi: inglizcha so'zlar, so'z o'rganish (toggle + izoh) va foydalanuvchining istisno so'zlari.
     // Trigger rejimida (avto tanlanmagan) boshqa avto elementlar kabi xira/o'chiq.
+    // Qator balandligi izoh necha qatorga o'ralishiga qarab (til o'zgarsa ham kesilmasin).
     bool autoOn = !trigOn;
-    RECT c = AddRowEx(w, y, S(w, 72), T(S_SET_SKIP_EN), T(S_SET_SKIP_EN_HINT), S(w, 44), S(w, 22), autoOn);
-    Add(w, ID_SKIPEN, K_TOGGLE, c.left, c.top, c.right, c.bottom, NULL, autoOn);
-    y += S(w, 78);
+    int y = top + cardH + S(w, 5);
+    static const StrId kTg[2][2] = { { S_SET_SKIP_EN, S_SET_SKIP_EN_HINT }, { S_SET_LEARN, S_SET_LEARN_HINT } };
+    for (int k = 0; k < 2; ++k) {
+        int hw = X1(w) - X0(w) - S(w, 18) - S(w, 44 + 28);
+        int rh = S(w, 27 + 6) + TextH(w, w->fSmall, T(kTg[k][1]), hw);
+        RECT c = AddRowEx(w, y, rh, T(kTg[k][0]), T(kTg[k][1]), S(w, 44), S(w, 22), autoOn);
+        Add(w, k ? ID_LEARN : ID_SKIPEN, K_TOGGLE, c.left, c.top, c.right, c.bottom, NULL, autoOn);
+        y += rh + S(w, 3);
+    }
 
-    c = AddRowEx(w, y, S(w, 48), Label(w, S_SET_SKIP_WORDS), NULL, S(w, 270), S(w, 34), autoOn);
+    RECT c = AddRowEx(w, y, S(w, 38), Label(w, S_SET_SKIP_WORDS), NULL, S(w, 270), S(w, 32), autoOn);
     Add(w, ID_SKIPEDIT, K_EDIT, c.left, c.top, c.right, c.bottom, NULL, autoOn);
     int eh = S(w, 20);
     MoveWindow(w->skipEdit, c.left + S(w, 12), c.top + (c.bottom - c.top - eh) / 2,
@@ -702,7 +709,6 @@ static void LayoutMode(Win* w)
     EnableWindow(w->skipEdit, autoOn);
     SendMessageW(w->skipEdit, 0x1501 /*EM_SETCUEBANNER*/, TRUE, (LPARAM)T(S_SET_SKIP_WORDS_HINT));
 }
-
 static void LayoutHotkeys(Win* w)
 {
     static const StrId names[3] = { S_HK_MODE, S_HK_ENABLE, S_HK_CONVERT };
@@ -889,9 +895,9 @@ static void DrawRowCard(Win* w, HDC dc, const Item& it)
     COLORREF tc = it.enabled ? th.text : th.textDim;
     if (it.text2) {
         // nom + ostida kichik izoh (ikki qatorgacha)
-        RECT n = { it.rc.left + S(w, 18), it.rc.top + S(w, 9), it.rc.right - it.sub, it.rc.top + S(w, 31) };
+        RECT n = { it.rc.left + S(w, 18), it.rc.top + S(w, 7), it.rc.right - it.sub, it.rc.top + S(w, 27) };
         Ui_Text(dc, it.text, n, w->fBody, tc, DT_SINGLELINE | DT_VCENTER | DT_END_ELLIPSIS | DT_NOPREFIX);
-        RECT h = { n.left, it.rc.top + S(w, 31), it.rc.right - it.sub, it.rc.bottom - S(w, 6) };
+        RECT h = { n.left, it.rc.top + S(w, 27), it.rc.right - it.sub, it.rc.bottom - S(w, 2) };
         Ui_Text(dc, it.text2, h, w->fSmall, th.textDim, DT_WORDBREAK | DT_END_ELLIPSIS | DT_NOPREFIX);
         return;
     }
@@ -917,6 +923,7 @@ static void DrawText_(Win* w, HDC dc, const Item& it)
     case TS_HEAD:  f = w->fHead;  break;
     case TS_HINT:  f = w->fSmall; c = th.textDim; break;
     case TS_SUB:   f = w->fBody;  c = th.textDim; break;
+    case TS_HINTR: f = w->fSmall; c = th.textDim; fl = DT_SINGLELINE | DT_VCENTER | DT_RIGHT | DT_NOPREFIX | DT_END_ELLIPSIS; break;
     }
     Ui_Text(dc, it.text, it.rc, f, c, fl);
 }
@@ -1498,6 +1505,7 @@ static void ToggleItem(Win* w, int id)
     case ID_STARTUP: w->startup = !w->startup; v = w->startup; break;
     case ID_NOTIFY:  w->notify  = !w->notify;  v = w->notify;  break;
     case ID_SKIPEN:  w->skipEn  = !w->skipEn;  v = w->skipEn;  break;
+    case ID_LEARN:   w->learn   = !w->learn;   v = w->learn;   break;
     default:
         if (id >= ID_RULE_O && id <= ID_RULE_CH) {
             UINT bit = 1u << (id - ID_RULE_O);      // AUTO_RULE_O..CH = 1,2,4,8
@@ -1707,6 +1715,7 @@ static bool SaveAll(Win* w)
     g_settings.triggerVk = w->trig;
     g_settings.autoRules = w->rules;
     g_settings.skipEnglish = w->skipEn;
+    g_settings.learnWords = w->learn;
     wchar_t sw[1280];
     GetWindowTextW(w->skipEdit, sw, 1280);
     Settings_SetSkipWords(sw);              // ajratgichlarni (vergul, bo'shliq...) backend o'zi normallashtiradi
@@ -1929,7 +1938,7 @@ static void Activate(Win* w, int id, int x, int y)
         break;
     }
     case ID_APO: case ID_TRIG: OpenDrop(w, id); break;
-    case ID_STARTUP: case ID_NOTIFY: case ID_SKIPEN:
+    case ID_STARTUP: case ID_NOTIFY: case ID_SKIPEN: case ID_LEARN:
     case ID_RULE_O: case ID_RULE_G: case ID_RULE_SH: case ID_RULE_CH:
         ToggleItem(w, id);
         break;
@@ -2376,6 +2385,11 @@ static LRESULT CALLBACK SettingsWndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM l
 //  Ochish (modal)
 // ---------------------------------------------------------------------
 
+bool SettingsUi_IsOpen()
+{
+    return s_hSettings && IsWindow(s_hSettings);
+}
+
 void ShowSettingsPage(HWND parent, int page)
 {
     // Allaqachon ochiq: yangisi ochilmaydi, mavjudi oldinga chiqadi va sahifaga o'tadi
@@ -2408,6 +2422,7 @@ void ShowSettingsPage(HWND parent, int page)
     w->startup  = Startup_IsEnabled();
     w->notify   = g_settings.notify;
     w->skipEn   = g_settings.skipEnglish;
+    w->learn    = g_settings.learnWords;
     w->mode     = g_settings.mode;
     w->trig     = g_settings.triggerVk;
     w->rules    = g_settings.autoRules;
@@ -2454,6 +2469,7 @@ void ShowSettingsPage(HWND parent, int page)
     SetAnim(w->an[AN_TOG + ID_STARTUP], w->startup ? 1.f : 0.f);
     SetAnim(w->an[AN_TOG + ID_NOTIFY], w->notify ? 1.f : 0.f);
     SetAnim(w->an[AN_TOG + ID_SKIPEN], w->skipEn ? 1.f : 0.f);
+    SetAnim(w->an[AN_TOG + ID_LEARN], w->learn ? 1.f : 0.f);
 
     // foydalanuvchining istisno so'zlari: ";" o'rniga ", " bilan ko'rsatiladi (saqlashda backend normallashtiradi)
     {

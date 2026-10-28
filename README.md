@@ -59,6 +59,19 @@ shu yorliqdan ochasiz.
   va o'z istisno so'zlaringizni qo'shish mumkin).
 - **Kirill → Lotin** — Ctrl + o'ng tugma (yoki tezkor tugma) menyusida kirill
   matnni yangi alifbodagi lotinga (ş ç ö ğ) o'giruvchi uchinchi band bor.
+- **Tray ikonka holati** — avto rejimda ikonka burchagida kichik **A** belgisi bor;
+  Harfbek o'chiq bo'lsa ikonka kulrang va xira ko'rinadi. Trigger rejimida yoqiq
+  holatda asl ikonka turadi.
+- **Shu dasturda istisno qilish** — avto rejimda tezkor panelda oxirgi yozgan dasturingiz
+  nomi va bitta tugma chiqadi: bir bosishda shu dasturni istisnoga qo'shasiz yoki
+  olasiz. Terminallar doim istisno.
+- **Istisno so'zlarni taklif qilish** — avto rejimda bir so'zdagi almashtirishni
+  Backspace bilan ikki marta qaytarsangiz, Harfbek shu so'zni istisnoga qo'shishni
+  taklif qiladi (kichik oyna, ~8 soniyadan keyin o'zi yo'qoladi). Sozlamalarda
+  o'chirib qo'yish mumkin.
+- **Lotin → Kirill** — o'girish menyusidagi 4-band: yangi (ö ğ ş ç) ham, eski
+  (o' g' sh ch) lotin yozuvi ham kirillga o'giriladi (`O'zbekiston` → `Ўзбекистон`).
+  Lotincha xorijiy so'zlar ham o'giriladi — o'girmoqchi matnni o'zingiz belgilaysiz.
 - **Sinab köriş maydoni** — Sozlamalardagi alohida sahifa: shu yerda yozib, Harfbek
   joriy rejimda qanday ishlashini jonli ko'rasiz; maxsus harflar sanagichi va kichik
   sinovlar bor. Yozganingiz hech qayerga saqlanmaydi.

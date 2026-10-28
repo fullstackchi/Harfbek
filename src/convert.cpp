@@ -1,9 +1,12 @@
 // Belgilangan matnni o'girish: nusxalash (Ctrl+C) -> o'girish -> qaytarish (Ctrl+V).
 // Ish alohida thread'da bajariladi, shunda hook thread'i (klaviatura) bloklanmaydi.
 #include "app.h"
+#include "translit.h"   // ToCyrillic (light)
 #include <string>
 #include <cstring>
 #include <cwctype>
+
+#pragma optimize("s", on)   // foydalanuvchi amali (o'girish) — hajm uchun (exe budjeti)
 
 // Maxsus harflar (hex — encoding'ga bog'liq emas):
 //   ö=00F6 Ö=00D6  ğ=011F Ğ=011E  ş=015F Ş=015E  ç=00E7 Ç=00C7
@@ -430,7 +433,8 @@ static DWORD WINAPI ConvThread(LPVOID param)
         sel = ClipGet();
         if (!sel.empty())
             out = dir == CONV_TO_DIGRAPH ? ToDigraph(sel, g_settings.apo) :
-                  dir == CONV_CYR_TO_LAT ? ToLatin(sel) : ToSpecial(sel);
+                  dir == CONV_CYR_TO_LAT ? ToLatin(sel) :
+                  dir == CONV_LAT_TO_CYR ? ToCyrillic(sel) : ToSpecial(sel);
     }
 
     if (!changed) {
@@ -460,7 +464,7 @@ static DWORD WINAPI ConvThread(LPVOID param)
 
 void TextConvert_Run(int dir)
 {
-    if (dir < CONV_TO_DIGRAPH || dir > CONV_CYR_TO_LAT) return;
+    if (dir < CONV_TO_DIGRAPH || dir > CONV_LAT_TO_CYR) return;
     if (InterlockedCompareExchange(&g_convBusy, 1, 0) != 0) return;   // oldingisi hali ishlayapti
     HANDLE t = CreateThread(NULL, 0, ConvThread, (LPVOID)(INT_PTR)dir, 0, NULL);
     if (t) CloseHandle(t);

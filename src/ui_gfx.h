@@ -67,3 +67,10 @@ void Ui_DrawCard(HDC, const RECT&, bool selected, float hover, float select /*0.
 void Ui_DrawKeycap(HDC, const RECT&, const wchar_t* text, HFONT, bool accent);
 void Ui_DrawFocusRing(HDC, const RECT&, int radius);
 void Ui_DrawInputFrame(HDC, const RECT&, bool focused, float hover);   // native EDIT atrofidagi ramka
+
+// ---- Tray holat ikonkasi ----
+// base ikonka o'lchamidagi yangi 32-bit ikonka: badge — o'ng pastki burchakda
+// accent doira ichida oq "A" (atrofida 1 px shaffof cut-out); gray — kulrang
+// (luminance) va ~60% alpha. GDI+ kerak emas (UI oynasi ochiq bo'lmasa ham ishlaydi).
+// Chaqiruvchi DestroyIcon qiladi; xato bo'lsa NULL.
+HICON Ui_MakeStateIcon(HICON base, bool badge, bool gray);
